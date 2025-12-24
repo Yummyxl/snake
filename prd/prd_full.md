@@ -99,7 +99,8 @@
   - 详情必须展示三张状态卡：Stage 状态、BC 状态、PPO 状态。
   - Stage 状态不单独存储，按 7.2 聚合规则展示。
   - 必须展示 BC/PPO 的累计 episode 数量与最近一次 eval 覆盖率。
-  - 顶部控制区必须包含 Start Slot（开始 BC/开始 PPO 二选一）+ 操作按钮（停止/恢复/完成/初始化）。
+- 顶部控制区必须包含 Start Slot（开始 BC/开始 PPO 二选一）+ 操作按钮（停止/恢复/完成/初始化）。
+- “停止/恢复/完成”只针对“当前可操作阶段”展示：仅当该阶段状态为 running/paused 时展示；当 BC 已完成且 PPO 未开始时，不应再展示 BC 的停止/恢复/完成按钮。
   - Start Slot 同一时刻只展示一个按钮：
     - 开始 BC：仅当 BC=not_started 且 PPO=not_started 时展示；可用性受“前置 Stage 完成”限制（见 7.3）。
     - 开始 PPO：仅当 BC=completed 且 PPO=not_started 时展示；且必须存在 BC best checkpoint 才可用（见 7.3）。
@@ -129,7 +130,8 @@
   - 默认展示最近 200 个 episode，不支持切换范围。
   - 鼠标悬停显示 episode 级别指标（loss、coverage 等）。
   - 指标区仅展示曲线大图，不展示额外的“latest xxx”文本行（避免出现两个同名指标，如两个 `bc_loss`）。
-  - 指标曲线不提供 UI 选择器（避免页面信息噪声）；BC 固定展示 `bc_loss`，PPO 固定展示 `ppo_loss` + `reward_mean`。
+  - 指标不提供“按指标选择器”；但当 PPO 已开始时，指标区必须支持在 BC/PPO 两个阶段间切换查看历史指标。
+  - BC 指标固定展示 `bc_loss`；PPO 指标固定展示 `ppo_loss` + `reward_mean`，且两条线必须画在同一个图中。
   - 图表应尽量放大（例如增大图高），优先保证可读性。
 - 交互（rollout 列表）：
   - 列表项必须展示：rollout_id、coverage、steps、length_max、reward_total、phase、生成时间。

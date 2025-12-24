@@ -1,5 +1,4 @@
-import { useMemo } from "react";
-import { defaultMetrics, metricOptions } from "../utils/stageMetrics.js";
+import { useEffect, useMemo, useState } from "react";
 
 const COLORS = {
   bc_loss: "#60a5fa",
@@ -28,9 +27,7 @@ function fmtTick(key, v) {
   return v.toFixed(4);
 }
 
-function toPath(series, key, w, h, padL, padR, padT, padB) {
-  const b = bounds(series, key);
-  if (!b) return [];
+function toPath(series, key, b, w, h, padL, padR, padT, padB) {
   const n = series.length;
   if (n < 2) return [];
   const segs = [];
@@ -54,7 +51,7 @@ function pickEpisodes(series) {
 
 function MetricChart({ series, metricKey }) {
   const w = 680;
-  const h = 180;
+  const h = 220;
   const padL = 54;
   const padR = 14;
   const padT = 14;
@@ -62,7 +59,7 @@ function MetricChart({ series, metricKey }) {
   const b = bounds(series, metricKey);
   if (!series?.length || !b) return <div className="chartEmpty">暂无指标数据</div>;
   const color = COLORS[metricKey] || "#0f172a";
-  const paths = toPath(series, metricKey, w, h, padL, padR, padT, padB);
+  const paths = toPath(series, metricKey, b, w, h, padL, padR, padT, padB);
   const y0 = h - padB;
   const x0 = padL;
   const ticks = [
@@ -95,16 +92,109 @@ function MetricChart({ series, metricKey }) {
   );
 }
 
+function PpoCombinedChart({ series }) {
+  const w = 680;
+  const h = 240;
+  const padL = 54;
+  const padR = 54;
+  const padT = 14;
+  const padB = 30;
+  const bLoss = bounds(series, "ppo_loss");
+  const bReward = bounds(series, "reward_mean");
+  if (!series?.length || !bLoss || !bReward) return <div className="chartEmpty">暂无指标数据</div>;
+  const lossPaths = toPath(series, "ppo_loss", bLoss, w, h, padL, padR, padT, padB);
+  const rewardPaths = toPath(series, "reward_mean", bReward, w, h, padL, padR, padT, padB);
+  const y0 = h - padB;
+  const xL = padL;
+  const xR = w - padR;
+  const ticks = [0, 0.5, 1];
+  const eps = pickEpisodes(series);
+  return (
+    <div className="chartWrap">
+      <svg className="chartSvg" viewBox={`0 0 ${w} ${h}`} role="img" aria-label="ppo chart">
+        <rect x="0" y="0" width={w} height={h} fill="#ffffff" />
+        <rect x={padL} y={padT} width={w - padL - padR} height={h - padT - padB} fill="#f8fafc" />
+        {ticks.map((t) => (
+          <line key={t} x1={padL} x2={w - padR} y1={padT + (1 - t) * (h - padT - padB)} y2={padT + (1 - t) * (h - padT - padB)} stroke="#e2e8f0" strokeWidth="1" />
+        ))}
+        <line x1={xL} x2={w - padR} y1={y0} y2={y0} stroke="#cbd5e1" strokeWidth="1.5" />
+        <line x1={xL} x2={xL} y1={padT} y2={y0} stroke="#cbd5e1" strokeWidth="1.5" />
+        <line x1={xR} x2={xR} y1={padT} y2={y0} stroke="#cbd5e1" strokeWidth="1.5" />
+        {ticks.map((t) => {
+          const y = padT + (1 - t) * (h - padT - padB);
+          const vLoss = bLoss.lo + (bLoss.hi - bLoss.lo) * t;
+          const vReward = bReward.lo + (bReward.hi - bReward.lo) * t;
+          return (
+            <g key={t}>
+              <text x={xL - 8} y={y + 4} textAnchor="end" fontSize="11" fill={COLORS.ppo_loss}>{fmtTick("ppo_loss", vLoss)}</text>
+              <text x={xR + 8} y={y + 4} textAnchor="start" fontSize="11" fill={COLORS.reward_mean}>{fmtTick("reward_mean", vReward)}</text>
+            </g>
+          );
+        })}
+        <text x={xL} y={h - 8} textAnchor="start" fontSize="11" fill="#64748b">{String(eps.first)}</text>
+        <text x={(xL + xR) / 2} y={h - 8} textAnchor="middle" fontSize="11" fill="#64748b">{String(eps.mid)}</text>
+        <text x={xR} y={h - 8} textAnchor="end" fontSize="11" fill="#64748b">{String(eps.last)}</text>
+        {lossPaths.map((d) => <path key={`l:${d}`} d={d} fill="none" stroke={COLORS.ppo_loss} strokeWidth="2" />)}
+        {rewardPaths.map((d) => <path key={`r:${d}`} d={d} fill="none" stroke={COLORS.reward_mean} strokeWidth="2" />)}
+        <g transform={`translate(${padL + 10} ${padT + 10})`}>
+          <rect x="0" y="0" width="10" height="10" fill={COLORS.ppo_loss} />
+          <text x="14" y="10" fontSize="12" fill="#0f172a">ppo_loss</text>
+          <rect x="94" y="0" width="10" height="10" fill={COLORS.reward_mean} />
+          <text x="108" y="10" fontSize="12" fill="#0f172a">reward_mean</text>
+        </g>
+      </svg>
+    </div>
+  );
+}
+
+function PhaseTab({ value, active, onPick }) {
+  const cls = value === "ppo" ? "pill pill--amber pill--sm" : "pill pill--blue pill--sm";
+  return (
+    <button className={`pillBtn ${cls} ${active ? "pillBtn--active" : ""}`} type="button" onClick={() => onPick(value)}>
+      {value.toUpperCase()}
+    </button>
+  );
+}
+
+function availablePhases(metrics, hintPhase) {
+  const hasBc = Array.isArray(metrics?.bc) && metrics.bc.length > 0;
+  const hasPpo = Array.isArray(metrics?.ppo) && metrics.ppo.length > 0;
+  const out = [];
+  if (hintPhase === "ppo" || hasPpo) out.push("ppo");
+  if (hintPhase === "bc" || hasBc) out.push("bc");
+  if (out.length === 2) return out;
+  if (hasBc && !out.includes("bc")) out.push("bc");
+  if (hasPpo && !out.includes("ppo")) out.push("ppo");
+  return out;
+}
+
 export default function StageDetailMetricsCard({ loading, metricsPhase, metrics }) {
-  const options = useMemo(() => metricOptions(metricsPhase), [metricsPhase]);
-  const series = metricsPhase === "bc" ? (metrics?.bc || []) : metricsPhase === "ppo" ? (metrics?.ppo || []) : [];
-  const keys = useMemo(() => defaultMetrics(metricsPhase).filter((k) => options.includes(k)), [metricsPhase, options]);
-  const showCharts = metricsPhase === "bc" || metricsPhase === "ppo";
-  const emptyText = loading ? "加载中…" : showCharts ? "暂无指标数据" : metricsPhase ? "暂无指标数据（尚未接入）" : "暂无训练指标";
+  const phases = useMemo(() => availablePhases(metrics, metricsPhase), [metrics, metricsPhase]);
+  const [selected, setSelected] = useState(metricsPhase);
+  const [touched, setTouched] = useState(false);
+
+  useEffect(() => { if (!touched) setSelected(metricsPhase); }, [metricsPhase, touched]);
+  useEffect(() => {
+    if (selected && phases.includes(selected)) return;
+    setSelected(phases[0] || metricsPhase || null);
+  }, [metricsPhase, phases, selected]);
+
+  const phase = selected || metricsPhase;
+  const series = phase === "bc" ? (metrics?.bc || []) : phase === "ppo" ? (metrics?.ppo || []) : [];
+  const showCharts = phase === "bc" || phase === "ppo";
+  const emptyText = loading ? "加载中…" : showCharts ? "暂无指标数据" : phase ? "暂无指标数据（尚未接入）" : "暂无训练指标";
   return (
     <div className="card chartCard">
-      <div className="cardHead"><div className="cardTitle">指标（大图）</div><div className="subtle mono">阶段：{metricsPhase ?? "--"}</div></div>
-      {showCharts && series.length ? keys.map((k) => <MetricChart key={k} series={series} metricKey={k} />) : <div className="chartEmpty">{emptyText}</div>}
+      <div className="cardHead">
+        <div className="cardTitle">指标（大图）</div>
+        <div className="toolbar__right">
+          {phases.length > 1 ? phases.map((p) => <PhaseTab key={p} value={p} active={p === phase} onPick={(v) => { setTouched(true); setSelected(v); }} />) : null}
+          <div className="subtle mono">阶段：{phase ?? "--"}</div>
+        </div>
+      </div>
+      {showCharts && series.length ? (
+        phase === "ppo" ? <PpoCombinedChart series={series} /> : <MetricChart series={series} metricKey="bc_loss" />
+      ) : <div className="chartEmpty">{emptyText}</div>}
     </div>
   );
 }

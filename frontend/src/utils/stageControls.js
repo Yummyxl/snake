@@ -28,7 +28,7 @@ export function getActionStates(detail) {
   const ppo = detail.ppo_status || "not_started";
   const stageCompleted = bc === "completed" && ppo === "completed";
   const anyRunning = bc === "running" || ppo === "running";
-  const phase = ppo !== "not_started" ? "ppo" : bc !== "not_started" ? "bc" : null;
+  const phase = ppo === "running" || ppo === "paused" ? "ppo" : bc === "running" || bc === "paused" ? "bc" : null;
   const status = phase === "ppo" ? ppo : phase === "bc" ? bc : "not_started";
   const alive = phase === "bc" ? Boolean(detail?.probe?.bc?.alive) : phase === "ppo" ? Boolean(detail?.probe?.ppo?.alive) : false;
   const ppoBestOk = phase !== "ppo" || Boolean(detail.has_ppo_best_checkpoint);
