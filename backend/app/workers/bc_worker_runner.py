@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import signal
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -52,7 +53,8 @@ def run_bc_worker(stage_id: int) -> None:
     except SystemExit:
         raise
     except Exception as e:
-        _pause_and_exit(datas_dir, stage_id, f"crash: {e}")
+        reason = f"crash: {type(e).__name__}: {e}"
+        _pause_and_exit(datas_dir, stage_id, reason, tb=traceback.format_exc())
 
 
 def _finalize_stop_if_needed(
@@ -314,16 +316,21 @@ def _exit_if_backend_unhealthy(datas_dir: Path, stage_id: int, health_url: str) 
     _pause_and_exit(datas_dir, stage_id, "backend_not_listening")
 
 
-def _pause_and_exit(datas_dir: Path, stage_id: int, reason: str) -> None:
+def _pause_and_exit(datas_dir: Path, stage_id: int, reason: str, *, tb: str | None = None) -> None:
     now = int(time.time() * 1000)
     state = read_stage_state(datas_dir, stage_id)
     nxt = dict(state)
     nxt["current_phase"] = "bc"
     nxt["bc_status"] = "paused"
+    nxt["bc_last_error"] = str(reason)
     nxt["updated_at_ms"] = now
     nxt["last_status_change_at_ms"] = now
     write_stage_state(datas_dir, stage_id, nxt)
-    write_runtime(datas_dir, "bc", stage_id, {"status": "exited", "exit_code": 0, "last_error": reason})
+    patch = {"status": "exited", "exit_code": 0, "last_error": str(reason)}
+    if tb:
+        patch["last_traceback"] = str(tb)
+        print(tb, flush=True)
+    write_runtime(datas_dir, "bc", stage_id, patch)
     raise SystemExit(0)
 
 

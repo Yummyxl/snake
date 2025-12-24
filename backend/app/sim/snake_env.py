@@ -39,20 +39,29 @@ class SnakeEnv:
         nxt = (head[0] + dr, head[1] + dc)
         self.steps += 1
         truncated = self.steps >= self.max_steps
-        if not (0 <= nxt[0] < self.size and 0 <= nxt[1] < self.size):
-            return StepResult(reward=_reward(self.size, ate=False, death=True), done=True, ate=False, collision="wall", truncated=truncated)
+        if not _in_bounds(nxt, self.size):
+            return _death_step(self.size, truncated, "wall")
         grow = nxt == self.food
-        body = self.snake if grow else self.snake[:-1]
-        if nxt in body:
-            return StepResult(reward=_reward(self.size, ate=False, death=True), done=True, ate=False, collision="self", truncated=truncated)
+        if _hits_body(nxt, self.snake, grow=grow):
+            return _death_step(self.size, truncated, "self")
+        dist_delta = _dist_delta(head, nxt, self.food)
+        self._advance(nxt, next_dir, grow)
+        done = truncated or len(self.snake) >= self.size * self.size
+        return StepResult(
+            reward=_reward(self.size, ate=grow, death=False, dist_delta=dist_delta),
+            done=done,
+            ate=grow,
+            collision=None,
+            truncated=truncated,
+        )
+
+    def _advance(self, nxt: Coord, next_dir: int, grow: bool) -> None:
         if not grow:
             self.snake.pop()
         self.snake.insert(0, nxt)
         self.cur_dir = next_dir
         if grow:
             self.food = self._spawn_food()
-        done = truncated or len(self.snake) >= self.size * self.size
-        return StepResult(reward=_reward(self.size, ate=grow, death=False), done=done, ate=grow, collision=None, truncated=truncated)
 
     def _init_snake_and_dir(self) -> tuple[list[Coord], int]:
         size = self.size
@@ -108,11 +117,43 @@ def _apply_relative(cur_dir: int, action: str) -> int:
     return cur_dir
 
 
-def _reward(size: int, *, ate: bool, death: bool) -> float:
-    w_len = 1.5
-    w_death = 3.0
-    w_step = 0.01 * (10.0 / float(max(1, int(size)))) ** 2
-    return (w_len if ate else 0.0) - w_step - (w_death if death else 0.0)
+def _reward(size: int, *, ate: bool, death: bool, dist_delta: float) -> float:
+    w_eat = 1.0
+    w_death = 10.0
+    w_step = 0.0
+    w_dist = 0.02
+    dd = float(max(-2.0, min(2.0, float(dist_delta or 0.0))))
+    return (w_eat if ate else 0.0) - (w_death if death else 0.0) + (w_dist * dd) - w_step
+
+
+def _death_step(size: int, truncated: bool, collision: str) -> StepResult:
+    return StepResult(
+        reward=_reward(size, ate=False, death=True, dist_delta=0.0),
+        done=True,
+        ate=False,
+        collision=str(collision),
+        truncated=bool(truncated),
+    )
+
+
+def _in_bounds(p: Coord, size: int) -> bool:
+    r, c = p
+    return 0 <= int(r) < int(size) and 0 <= int(c) < int(size)
+
+
+def _hits_body(nxt: Coord, snake: list[Coord], *, grow: bool) -> bool:
+    body = snake if grow else snake[:-1]
+    return nxt in body
+
+
+def _dist_delta(head: Coord, nxt: Coord, food: Coord) -> float:
+    if int(food[0]) < 0 or int(food[1]) < 0:
+        return 0.0
+    return float(_manhattan(head, food) - _manhattan(nxt, food))
+
+
+def _manhattan(a: Coord, b: Coord) -> int:
+    return abs(int(a[0]) - int(b[0])) + abs(int(a[1]) - int(b[1]))
 
 
 def _build_straight_snake(head: Coord, cur_dir: int, length: int) -> list[Coord]:

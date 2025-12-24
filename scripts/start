@@ -5,12 +5,28 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="$ROOT_DIR/datas/.run"
 LOG_DIR="$ROOT_DIR/datas/logs"
 
-BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
+BACKEND_HOST="${BACKEND_HOST:-0.0.0.0}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
-FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
+FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 
 mkdir -p "$RUN_DIR" "$LOG_DIR"
+
+lan_ipv4s() {
+  {
+    if command -v ipconfig >/dev/null 2>&1; then
+      ipconfig getifaddr en0 2>/dev/null || true
+      ipconfig getifaddr en1 2>/dev/null || true
+      ipconfig getifaddr en2 2>/dev/null || true
+    fi
+    if command -v hostname >/dev/null 2>&1; then
+      hostname -I 2>/dev/null || true
+    fi
+    if command -v ifconfig >/dev/null 2>&1; then
+      ifconfig 2>/dev/null | awk '/inet /{print $2}'
+    fi
+  } | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -vE '^(127\.|0\.)' | sort -u
+}
 
 pids_listening_on() {
   local port="$1"
@@ -88,6 +104,7 @@ start_frontend() {
     if [[ ! -d node_modules ]] || [[ ! -f node_modules/react-router-dom/package.json ]]; then
       npm install >>"$LOG_DIR/frontend.log" 2>&1
     fi
+    export VITE_PROXY_TARGET="${VITE_PROXY_TARGET:-http://127.0.0.1:$BACKEND_PORT}"
     nohup npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" >>"$LOG_DIR/frontend.log" 2>&1 &
     echo $! >"$pid_file"
   )
@@ -97,7 +114,20 @@ start_backend
 start_frontend
 
 echo
-echo "backend:  http://$BACKEND_HOST:$BACKEND_PORT/api/health"
-echo "frontend: http://$FRONTEND_HOST:$FRONTEND_PORT"
-echo "pids:     $RUN_DIR/backend.pid, $RUN_DIR/frontend.pid"
-echo "logs:     $LOG_DIR/backend.log, $LOG_DIR/frontend.log"
+echo "local:"
+echo "  backend:  http://127.0.0.1:$BACKEND_PORT/api/health"
+echo "  frontend: http://127.0.0.1:$FRONTEND_PORT"
+
+ips="$(lan_ipv4s | tr '\n' ' ' | xargs echo -n || true)"
+if [[ -n "${ips:-}" ]]; then
+  echo
+  echo "lan:"
+  for ip in $ips; do
+    echo "  backend:  http://$ip:$BACKEND_PORT/api/health"
+    echo "  frontend: http://$ip:$FRONTEND_PORT"
+  done
+fi
+
+echo
+echo "pids: $RUN_DIR/backend.pid, $RUN_DIR/frontend.pid"
+echo "logs: $LOG_DIR/backend.log, $LOG_DIR/frontend.log"

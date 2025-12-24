@@ -194,8 +194,7 @@ def _first_child_pid(ppid: int) -> int | None:
 
 
 def _cleanup_stale_runfiles(datas_dir: Path, phase: str, stage_id: int) -> None:
-    for p in (pid_path(datas_dir, phase, stage_id), runtime_path(datas_dir, phase, stage_id)):
-        try:
-            p.unlink()
-        except FileNotFoundError:
-            pass
+    try:
+        pid_path(datas_dir, phase, stage_id).unlink()
+    except FileNotFoundError:
+        pass

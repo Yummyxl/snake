@@ -223,8 +223,9 @@ datas/stages/<stage_id>/
 
 启动后：
 
-- 前端：`http://127.0.0.1:5173`
-- 后端健康检查：`http://127.0.0.1:8000/api/health`
+- 前端（本机）：`http://127.0.0.1:5173`
+- 后端健康检查（本机）：`http://127.0.0.1:8000/api/health`
+- 局域网访问：用启动脚本输出的 `lan:` 链接（`http://<本机IP>:5173`）
 - 日志：`datas/logs/backend.log`、`datas/logs/frontend.log`、`datas/logs/bc_<stage>.log`、`datas/logs/ppo_<stage>.log`
 
 停止服务：
@@ -242,7 +243,7 @@ datas/stages/<stage_id>/
 ```bash
 cd backend
 uv sync
-uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ### 前端
@@ -250,7 +251,7 @@ uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```bash
 cd frontend
 npm install
-npm run dev -- --host 127.0.0.1 --port 5173
+npm run dev -- --host 0.0.0.0 --port 5173
 ```
 
 ---
@@ -261,10 +262,18 @@ npm run dev -- --host 127.0.0.1 --port 5173
 
 `./scripts/start` 支持用环境变量覆盖默认地址/端口：
 
-- `BACKEND_HOST`（默认 `127.0.0.1`）
+- `BACKEND_HOST`（默认 `0.0.0.0`）
 - `BACKEND_PORT`（默认 `8000`）
-- `FRONTEND_HOST`（默认 `127.0.0.1`）
+- `FRONTEND_HOST`（默认 `0.0.0.0`）
 - `FRONTEND_PORT`（默认 `5173`）
+
+`./scripts/start` 默认会对外监听（`0.0.0.0`），其他机器通过 `http://<本机IP>:<端口>` 访问即可；如果你当前只监听在 `127.0.0.1`，可显式改为：
+
+```bash
+BACKEND_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 ./scripts/start
+```
+
+并用 `http://<本机IP>:<端口>/api/health` 访问（`127.0.0.1` 只在本机可用）；若仍无法访问，再检查系统防火墙/云安全组/路由器端口转发是否放行对应端口。
 
 示例：
 
@@ -272,18 +281,25 @@ npm run dev -- --host 127.0.0.1 --port 5173
 BACKEND_PORT=8001 FRONTEND_PORT=5174 ./scripts/start
 ```
 
+如需仅本机可访问：
+
+```bash
+BACKEND_HOST=127.0.0.1 FRONTEND_HOST=127.0.0.1 ./scripts/start
+```
+
 后端通用参数（见 `backend/app/config.py`）：
 
 - `DATAS_DIR`：数据目录（默认 `<repo>/datas`）
 - `CHICHI_API_BASE`：后端对外地址（默认 `http://127.0.0.1:8000`，用于 worker runtime/链接）
 - `CHICHI_HEALTH_URL`：worker 监听健康检查的 URL（默认 `http://127.0.0.1:8000/api/health`）
+- `CHICHI_TORCH_DEVICE`：强制训练设备（`cpu|mps|cuda`；默认自动选择）
 - `UV_CACHE_DIR`：uv 缓存目录（默认 `<repo>/.uv-cache`）
 - `WORKER_ACTION`/`BC_ACTION`：训练动作（`start|resume`，默认 `start`）
 
 前端 API Base：
 
-- `frontend/.env.local`：
-  - `VITE_API_BASE=http://127.0.0.1:8000`
+- 默认使用同源 `/api`（通过 Vite dev server 代理转发到后端）。
+- 如需指定其他后端地址，可设置 `VITE_API_BASE=http://<后端IP>:8000`
 
 ### BC 训练参数（`backend/app/config.py: bc_worker_cfg()`）
 
@@ -305,12 +321,12 @@ BACKEND_PORT=8001 FRONTEND_PORT=5174 ./scripts/start
 - `PPO_GAMMA`（默认 `0.99`）
 - `PPO_GAE_LAMBDA`（默认 `0.95`）
 - `PPO_CLIP`（默认 `0.2`）
-- `PPO_EPOCHS`（默认 `10`）
+- `PPO_EPOCHS`（默认 `1`）
 - `PPO_MINIBATCH_SIZE`（默认 `512`）
 - `PPO_VF_COEF`（默认 `0.5`）
 - `PPO_ENT_COEF`（默认 `0.01`）
 - `PPO_MAX_GRAD_NORM`（默认 `0.5`）
-- `PPO_ROLLOUT_STEPS`（默认 `20 * 100 * 50`）
+- `PPO_ROLLOUT_STEPS`（默认 `20 * 100 * 6`）
 - `PPO_ROLLOUT_MAX_STEPS`（默认 `0`，代表用默认 `size^2 * 8`）
 - `PPO_EVAL_MAX_STEPS`（默认 `0`，代表用默认 `size^2 * 40`）
 - `LATEST_KEEP` / `METRICS_KEEP`：同上

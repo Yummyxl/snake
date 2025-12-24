@@ -69,7 +69,7 @@ def ppo_worker_cfg() -> dict[str, Any]:
         # PPO clip range（重要：避免 policy update 过大）
         "clip": _env_float("PPO_CLIP", 0.2),
         # 每次 learn 对同一批 rollout 数据重复优化的 epoch 次数（SB3: n_epochs）
-        "ppo_epochs": _env_int("PPO_EPOCHS", 10),
+        "ppo_epochs": _env_int("PPO_EPOCHS", 4),
         # PPO minibatch size（SB3: batch_size）
         "minibatch_size": _env_int("PPO_MINIBATCH_SIZE", 512),
         # value loss 系数
@@ -80,7 +80,7 @@ def ppo_worker_cfg() -> dict[str, Any]:
         "max_grad_norm": _env_float("PPO_MAX_GRAD_NORM", 0.5),
         # 每次 learn 采样的环境 step 数（SB3: n_steps）；不要设置过大，否则 rollout buffer 占用巨量内存
         "rollout_steps": _env_int("PPO_ROLLOUT_STEPS", 20 * 100 * 60),
-        # PPO 采样时，单个 episode 的最大步数（0 表示使用默认：size^2 * 8）
+        # PPO 采样时，单个 episode 的最大步数（0 表示使用默认：size^2 * 400）
         "rollout_max_steps": _env_int("PPO_ROLLOUT_MAX_STEPS", 0),
         # eval 每次固定 10 条（PRD 固定不可配；这里保留字段用于 worker 调用）
         "eval_rollouts": 10,

@@ -3,11 +3,14 @@ from __future__ import annotations
 import os
 import signal
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
 import torch
+import torch.nn as nn
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 
@@ -78,7 +81,8 @@ def run_ppo_worker(stage_id: int) -> None:
     except SystemExit:
         raise
     except Exception as e:
-        _pause_and_exit(datas_dir, stage_id, f"crash: {e}")
+        reason = f"crash: {type(e).__name__}: {e}"
+        _pause_and_exit(datas_dir, stage_id, reason, tb=traceback.format_exc())
 
 
 def _loop(datas_dir: Path, health_url: str, stage_id: int, cfg: dict[str, Any]) -> None:
@@ -90,6 +94,14 @@ def _loop(datas_dir: Path, health_url: str, stage_id: int, cfg: dict[str, Any]) 
     plan, ckpt_episode = _init_weights(model, datas_dir, stage_id, device, action=action)
     write_runtime(datas_dir, "ppo", stage_id, {"device": str(device), "init_plan": plan.to_runtime()})
     _sync_episode_from_ckpt(datas_dir, stage_id, plan, ckpt_episode)
+
+    # 检查是否从BC继承，如果是则进行warmup
+    state = read_stage_state(datas_dir, stage_id)
+    ppo_episode = int(state.get("ppo_episode") or 0)
+    if ppo_episode == 0 and plan.ckpt_phase == "bc":
+        _warmup_value_network(model, env, size, cfg, device)
+        write_runtime(datas_dir, "ppo", stage_id, {"warmup_done": True})
+
     ctl = _StopCtl()
     while True:
         _maybe_pause_and_exit(ctl, datas_dir, stage_id, model, cfg, size, device)
@@ -99,6 +111,70 @@ def _loop(datas_dir: Path, health_url: str, stage_id: int, cfg: dict[str, Any]) 
         _eval_and_checkpoint(datas_dir, stage_id, size, cfg, model, device, reason="round_end")
         ctl.dirty = False
         _exit_if_backend_unhealthy(datas_dir, stage_id, health_url)
+
+
+def _warmup_value_network(model: PPO, env: SnakeGymEnv, size: int, cfg: dict[str, Any], device: torch.device) -> None:
+    """使用deterministic policy收集rollouts来预训练value网络，避免PPO第一步破坏BC策略"""
+    warmup_episodes = 50  # warmup episode数量
+    gamma = float(cfg.get("gamma") or 0.99)
+    warmup_lr = 1e-3  # warmup��习率
+    warmup_epochs = 10  # 每个数据重复训练的epoch数
+
+    # 收集rollouts（使用deterministic policy）
+    observations: list[np.ndarray] = []
+    returns: list[float] = []
+
+    for ep in range(warmup_episodes):
+        obs, _info = env.reset(seed=(ep * 1000 + size))
+        episode_rewards: list[float] = []
+        episode_obs: list[np.ndarray] = []
+
+        for _ in range(5000):  # 最大步数限制
+            # 使用deterministic action (argmax)
+            action, _state = model.predict(obs, deterministic=True)
+            obs, reward, terminated, truncated, info = env.step(action)
+            episode_rewards.append(float(reward))
+            episode_obs.append(obs.copy())
+
+            if terminated or truncated:
+                break
+
+        # 计算���个状态的return (从后往前)
+        episode_return = 0.0
+        for r in reversed(episode_rewards):
+            episode_return = float(r) + gamma * episode_return
+            returns.append(episode_return)
+            observations.append(episode_obs.pop())
+
+    # 训练value network
+    if len(observations) == 0:
+        return
+
+    # 转换为tensor
+    obs_tensor = torch.from_numpy(np.stack(observations)).float().to(device)
+    return_tensor = torch.from_numpy(np.array(returns, dtype=np.float32)).unsqueeze(1).to(device)
+
+    # 只训练value network
+    optimizer = torch.optim.AdamW(model.policy.value_net.parameters(), lr=warmup_lr)
+    criterion = nn.MSELoss()
+
+    model.policy.value_net.train()
+    for _epoch in range(warmup_epochs):
+        # 提取features
+        with torch.no_grad():
+            features = model.policy.extract_features(obs_tensor)
+            latent_pi, latent_vf = model.policy.mlp_extractor(features)
+
+        # 获取value预测
+        value_pred = model.policy.value_net(latent_vf)
+
+        # 计算loss并更新
+        loss = criterion(value_pred, return_tensor)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    model.policy.value_net.eval()
 
 
 def _train_round(ctl: _StopCtl, datas_dir: Path, stage_id: int, model: PPO, cfg: dict[str, Any], size: int) -> None:
@@ -250,15 +326,29 @@ def _init_weights(model: PPO, datas_dir: Path, stage_id: int, device: torch.devi
     plan = select_ppo_init_plan(datas_dir, stage_id, action)
     tmp = CnnVitActorCritic(ModelCfg()).to(device)
     plan2, episode = load_weights(tmp, datas_dir, plan, device)
-    _apply_cnnvit_weights(model.policy, tmp)
+    # 如果是从BC继承，需要��初始化value网络（BC的value权重是随机的）
+    from_bc = plan.ckpt_phase == "bc"
+    _apply_cnnvit_weights(model.policy, tmp, from_bc=from_bc)
     return plan2, episode
 
 
-def _apply_cnnvit_weights(sb3_policy: Any, tmp: CnnVitActorCritic) -> None:
+def _apply_cnnvit_weights(sb3_policy: Any, tmp: CnnVitActorCritic, *, from_bc: bool = False) -> None:
     sb3_policy.features_extractor.backbone.load_state_dict(tmp.backbone.state_dict())
     sb3_policy.features_extractor.vit.load_state_dict(tmp.vit.state_dict())
     sb3_policy.action_net.load_state_dict(tmp.heads.policy.state_dict())
-    sb3_policy.value_net.load_state_dict(tmp.heads.value.state_dict())
+    # 如果是从BC继承，value网络是随机权重，需要零初始化以避免破坏已学习的policy
+    if from_bc:
+        _zero_init_value_net(sb3_policy.value_net)
+    else:
+        sb3_policy.value_net.load_state_dict(tmp.heads.value.state_dict())
+
+
+def _zero_init_value_net(value_net: torch.nn.Module) -> None:
+    """将value网络输出层零初始化，使初始value估计接近0（无偏见起点）"""
+    for param in value_net.parameters():
+        nn.init.zeros_(param)
+    if hasattr(value_net, 'bias') and value_net.bias is not None:
+        nn.init.zeros_(value_net.bias)
 
 
 def _sync_episode_from_ckpt(datas_dir: Path, stage_id: int, plan: InitPlan, episode: int | None) -> None:
@@ -314,21 +404,26 @@ def _exit_if_backend_unhealthy(datas_dir: Path, stage_id: int, health_url: str) 
     _pause_and_exit(datas_dir, stage_id, "backend_not_listening")
 
 
-def _pause_and_exit(datas_dir: Path, stage_id: int, reason: str) -> None:
+def _pause_and_exit(datas_dir: Path, stage_id: int, reason: str, *, tb: str | None = None) -> None:
     now = int(time.time() * 1000)
     state = read_stage_state(datas_dir, stage_id)
     nxt = dict(state)
     nxt["current_phase"] = "ppo"
     nxt["ppo_status"] = "paused"
+    nxt["ppo_last_error"] = str(reason)
     nxt["updated_at_ms"] = now
     nxt["last_status_change_at_ms"] = now
     write_stage_state(datas_dir, stage_id, nxt)
-    write_runtime(datas_dir, "ppo", stage_id, {"status": "exited", "exit_code": 0, "last_error": reason})
+    patch = {"status": "exited", "exit_code": 0, "last_error": str(reason)}
+    if tb:
+        patch["last_traceback"] = str(tb)
+        print(tb, flush=True)
+    write_runtime(datas_dir, "ppo", stage_id, patch)
     raise SystemExit(0)
 
 
 def _make_env(*, size: int, seed: int, cfg: dict[str, Any]) -> SnakeGymEnv:
-    max_steps = int(cfg.get("rollout_max_steps") or 0) or int(size * size * 8)
+    max_steps = int(cfg.get("rollout_max_steps") or 0) or int(size * size * 400)
     return SnakeGymEnv(size=size, seed=seed, max_steps=max_steps)
 
 
