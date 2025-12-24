@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUN_DIR="$ROOT_DIR/datas/.run"
+LOG_DIR="$ROOT_DIR/datas/logs"
+
+BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
+BACKEND_PORT="${BACKEND_PORT:-8000}"
+FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
+FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+
+mkdir -p "$RUN_DIR" "$LOG_DIR"
+
+pids_listening_on() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true
+    return 0
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -lptn "sport = :$port" 2>/dev/null | awk -F'pid=|,' '/pid=/{print $2}' | sort -u || true
+    return 0
+  fi
+  return 0
+}
+
+assert_port_free() {
+  local port="$1"
+  local pids
+  pids="$(pids_listening_on "$port" | tr '\n' ' ' | xargs echo -n || true)"
+  if [[ -n "${pids:-}" ]]; then
+    echo "port $port is already in use (pids: $pids)"
+    echo "run ./stop (or scripts/stop) to clean up, or free the port."
+    exit 1
+  fi
+}
+
+is_running_pidfile() {
+  local pid_file="$1"
+  [[ -f "$pid_file" ]] || return 1
+  local pid
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  [[ -n "${pid:-}" ]] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+start_backend() {
+  local pid_file="$RUN_DIR/backend.pid"
+  if is_running_pidfile "$pid_file"; then
+    echo "backend already running (pid=$(cat "$pid_file"))"
+    return 0
+  fi
+
+  assert_port_free "$BACKEND_PORT"
+
+  echo "starting backend..."
+  (
+    cd "$ROOT_DIR/backend"
+    if ! command -v uv >/dev/null 2>&1; then
+      echo "missing 'uv' (required for backend). Install uv first." >"$LOG_DIR/backend.log"
+      exit 1
+    fi
+    export UV_CACHE_DIR="${UV_CACHE_DIR:-$ROOT_DIR/.uv-cache}"
+    uv sync >>"$LOG_DIR/backend.log" 2>&1
+    nohup uv run uvicorn app.main:app --reload --host "$BACKEND_HOST" --port "$BACKEND_PORT" \
+      >>"$LOG_DIR/backend.log" 2>&1 &
+    echo $! >"$pid_file"
+  )
+}
+
+start_frontend() {
+  local pid_file="$RUN_DIR/frontend.pid"
+  if is_running_pidfile "$pid_file"; then
+    echo "frontend already running (pid=$(cat "$pid_file"))"
+    return 0
+  fi
+
+  assert_port_free "$FRONTEND_PORT"
+
+  echo "starting frontend..."
+  (
+    cd "$ROOT_DIR/frontend"
+    if ! command -v npm >/dev/null 2>&1; then
+      echo "missing 'npm' (required for frontend). Install Node.js first." >"$LOG_DIR/frontend.log"
+      exit 1
+    fi
+    if [[ ! -d node_modules ]] || [[ ! -f node_modules/react-router-dom/package.json ]]; then
+      npm install >>"$LOG_DIR/frontend.log" 2>&1
+    fi
+    nohup npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" >>"$LOG_DIR/frontend.log" 2>&1 &
+    echo $! >"$pid_file"
+  )
+}
+
+start_backend
+start_frontend
+
+echo
+echo "backend:  http://$BACKEND_HOST:$BACKEND_PORT/api/health"
+echo "frontend: http://$FRONTEND_HOST:$FRONTEND_PORT"
+echo "pids:     $RUN_DIR/backend.pid, $RUN_DIR/frontend.pid"
+echo "logs:     $LOG_DIR/backend.log, $LOG_DIR/frontend.log"

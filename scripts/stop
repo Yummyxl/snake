@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUN_DIR="$ROOT_DIR/datas/.run"
+
+BACKEND_PORT="${BACKEND_PORT:-8000}"
+FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+
+pids_listening_on() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true
+    return 0
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -lptn "sport = :$port" 2>/dev/null | awk -F'pid=|,' '/pid=/{print $2}' | sort -u || true
+    return 0
+  fi
+  return 0
+}
+
+kill_pid() {
+  local pid="$1"
+  if [[ -z "${pid:-}" ]]; then return 0; fi
+  kill -0 "$pid" 2>/dev/null || return 0
+  kill "$pid" 2>/dev/null || true
+  for _ in {1..25}; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.2
+  done
+  kill -9 "$pid" 2>/dev/null || true
+}
+
+stop_pidfile() {
+  local name="$1"
+  local pid_file="$RUN_DIR/$name.pid"
+  [[ -f "$pid_file" ]] || return 0
+  local pid
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  rm -f "$pid_file"
+  if [[ -n "${pid:-}" ]]; then
+    echo "stopping $name (pid=$pid)..."
+    kill_pid "$pid"
+  fi
+}
+
+stop_by_port() {
+  local name="$1"
+  local port="$2"
+  local pids
+  pids="$(pids_listening_on "$port" | tr '\n' ' ' | xargs echo -n || true)"
+  [[ -n "${pids:-}" ]] || return 0
+  echo "port fallback: stopping $name on :$port (pids: $pids)..."
+  for pid in $pids; do
+    kill_pid "$pid"
+  done
+}
+
+mkdir -p "$RUN_DIR"
+
+stop_pidfile "frontend"
+stop_pidfile "backend"
+
+stop_by_port "frontend" "$FRONTEND_PORT"
+stop_by_port "backend" "$BACKEND_PORT"
+

@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+import numpy as np
+import torch
+from gymnasium import Env, spaces
+
+from app.config import SnakeEnvCfg
+from app.ml.encoding import encode_grid
+from app.sim.snake_env import SnakeEnv
+
+
+class SnakeGymEnv(Env):
+    metadata = {"render_modes": []}
+
+    def __init__(self, *, size: int, seed: int, max_steps: int) -> None:
+        self.size = int(size)
+        self.base_seed = int(seed)
+        self.max_steps = int(max_steps)
+        self.action_space = spaces.Discrete(3)
+        self.observation_space = spaces.Box(0.0, 1.0, shape=(8, self.size, self.size), dtype=np.float32)
+        self._device = torch.device("cpu")
+        self._actions = ["L", "S", "R"]
+        self._episode = 0
+        self._env: SnakeEnv | None = None
+
+    def reset(self, *, seed: int | None = None, options: dict | None = None):  # noqa: ANN001
+        _ = options
+        if seed is not None:
+            self.base_seed = int(seed)
+        self._episode += 1
+        self._env = SnakeEnv(SnakeEnvCfg(size=self.size, seed=self.base_seed + self._episode, max_steps=self.max_steps))
+        return self._obs(), {}
+
+    def step(self, action):  # noqa: ANN001
+        if self._env is None:
+            raise RuntimeError("env not reset")
+        a = self._actions[int(action)] if 0 <= int(action) <= 2 else "S"
+        res = self._env.step(a)
+        obs = self._obs()
+        terminated = bool(res.done and not res.truncated)
+        info = {"ate": bool(res.ate), "collision": res.collision}
+        return obs, float(res.reward), terminated, bool(res.truncated), info
+
+    def _obs(self) -> np.ndarray:
+        if self._env is None:
+            raise RuntimeError("env not reset")
+        s = self._env.snapshot()
+        x = encode_grid(size=self.size, snake=list(s["snake"]), food=list(s["food"]), dir_name=str(s["dir"]), device=self._device)
+        return x.detach().cpu().numpy()
+

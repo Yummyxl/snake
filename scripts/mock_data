@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+cd "$ROOT_DIR/backend"
+if ! command -v uv >/dev/null 2>&1; then
+  echo "missing 'uv' (required for backend). Install uv first."
+  exit 1
+fi
+
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$ROOT_DIR/.uv-cache}"
+uv run python -m app.tools.mock_data
+echo "mock data generated under: $ROOT_DIR/datas/stages"
