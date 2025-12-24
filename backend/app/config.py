@@ -79,7 +79,7 @@ def ppo_worker_cfg() -> dict[str, Any]:
         # 梯度裁剪
         "max_grad_norm": _env_float("PPO_MAX_GRAD_NORM", 0.5),
         # 每次 learn 采样的环境 step 数（SB3: n_steps）；不要设置过大，否则 rollout buffer 占用巨量内存
-        "rollout_steps": _env_int("PPO_ROLLOUT_STEPS", 2000),
+        "rollout_steps": _env_int("PPO_ROLLOUT_STEPS", 3000),
         # PPO 采样时，单个 episode 的最大步数（0 表示使用默认：size^2 * 8）
         "rollout_max_steps": _env_int("PPO_ROLLOUT_MAX_STEPS", 0),
         # eval 每次固定 10 条（PRD 固定不可配；这里保留字段用于 worker 调用）

@@ -9,6 +9,7 @@ export function useStageListData() {
   const [items, setItems] = useState([]);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [lastOkAtMs, setLastOkAtMs] = useState(null);
   const hasSuccess = useRef(false);
   const [paused, setPausedState] = useState(false);
   const pausedRef = useRef(false);
@@ -17,8 +18,9 @@ export function useStageListData() {
   const abortRef = useRef(null);
 
   const setPaused = useCallback((v) => { pausedRef.current = v; setPausedState(v); }, []);
-  const poll = useCallback(async () => {
-    if (pausedRef.current || inFlight.current) return;
+  const poll = useCallback(async (opts) => {
+    const force = Boolean(opts?.force);
+    if ((pausedRef.current && !force) || inFlight.current) return;
     inFlight.current = true;
     const ac = new AbortController();
     abortRef.current = ac;
@@ -27,6 +29,7 @@ export function useStageListData() {
       setItems(data);
       hasSuccess.current = true;
       failures.current = 0;
+      setLastOkAtMs(Date.now());
       setError(null);
     } catch (e) {
       if (ac.signal.aborted) return;
@@ -47,5 +50,6 @@ export function useStageListData() {
     };
   }, [poll]);
   const retry = useCallback(() => { failures.current = 0; setPaused(false); setError(null); setLoading(true); poll(); }, [poll, setPaused]);
-  return { items, error, loading, paused, retry };
+  const refresh = useCallback(() => poll({ force: true }), [poll]);
+  return { items, error, loading, paused, retry, refresh, setPaused, lastOkAtMs };
 }

@@ -11,6 +11,19 @@ function CardRow({ label, value, mono }) {
   );
 }
 
+function CoverageBar({ value }) {
+  const n = Number(value);
+  const v = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : null;
+  return (
+    <div className="coverageBar" title={v === null ? "暂无 Eval 覆盖率" : `覆盖率 ${fmtCoverage(v)}`}>
+      <div className="coverageBar__track" aria-hidden="true">
+        <div className="coverageBar__fill" style={{ width: v === null ? "0%" : `${Math.round(v * 100)}%` }} />
+      </div>
+      <div className="coverageBar__text mono">{fmtCoverage(v)}</div>
+    </div>
+  );
+}
+
 function PhasePills({ bcStatus, ppoStatus }) {
   return (
     <div className="phasePills">
@@ -44,15 +57,39 @@ function StageCard({ s }) {
           value={`BC ${s.bc_episode} / PPO ${s.ppo_episode} / Total ${s.total_episode}`}
           mono
         />
-        <CardRow label="Eval 覆盖率" value={fmtCoverage(s.last_eval_coverage)} mono />
+        <CardRow label="Eval 覆盖率" value={<CoverageBar value={s.last_eval_coverage} />} />
         <CardRow label="更新时间" value={fmtTime(s.updated_at_ms)} mono />
       </div>
     </Link>
   );
 }
 
+function SkeletonStageCard({ i }) {
+  return (
+    <div className="stageCard stageCard--skeleton" role="listitem" aria-label={`加载中 ${i + 1}`}>
+      <div className="stageCard__top">
+        <div className="skeleton skeleton--title" />
+        <div className="skeleton skeleton--pill" />
+      </div>
+      <div className="stageCard__body">
+        <div className="skeleton skeleton--row" />
+        <div className="skeleton skeleton--row" />
+        <div className="skeleton skeleton--row" />
+        <div className="skeleton skeleton--row" />
+        <div className="skeleton skeleton--row" />
+      </div>
+    </div>
+  );
+}
+
 export default function StageCards({ items, loading }) {
-  if (loading && items.length === 0) return <div className="empty">加载中…</div>;
+  if (loading && items.length === 0) {
+    return (
+      <div className="cardsRow" role="list" aria-label="Stage 列表加载中">
+        {Array.from({ length: 6 }).map((_, i) => <SkeletonStageCard key={String(i)} i={i} />)}
+      </div>
+    );
+  }
   if (items.length === 0) return <div className="empty">暂无 Stage，请初始化</div>;
   return (
     <div className="cardsRow" role="list">

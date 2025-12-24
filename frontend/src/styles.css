@@ -328,6 +328,74 @@ body {
   color: #991b1b;
 }
 
+/* Stage list toolbar */
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin: 10px 0 14px;
+}
+
+.toolbar__left {
+  min-width: 0;
+}
+
+.toolbar__filters {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.toolbar__meta {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.toolbar__right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.input,
+.select {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.input {
+  width: 280px;
+  max-width: 100%;
+}
+
+.pillBtn {
+  cursor: pointer;
+  border: none;
+  background: transparent;
+}
+
+.pillBtn--active {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+}
+
+.pillBtn__count {
+  margin-left: 6px;
+  opacity: 0.85;
+}
+
+.pillBtn:focus-visible,
+.input:focus-visible,
+.select:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: 2px;
+}
+
 /* Cards (Stage list) */
 .cardsRow {
   display: grid;
@@ -402,6 +470,71 @@ body {
   margin-top: 10px;
   display: grid;
   gap: 8px;
+}
+
+.coverageBar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.coverageBar__track {
+  width: 120px;
+  height: 8px;
+  background: #e2e8f0;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+}
+
+.coverageBar__fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6, #22c55e);
+}
+
+.coverageBar__text {
+  width: 44px;
+  text-align: right;
+  font-size: 12px;
+}
+
+.stageCard--skeleton {
+  cursor: default;
+  user-select: none;
+}
+
+.stageCard--skeleton:hover {
+  box-shadow: 0 6px 22px rgba(15, 23, 42, 0.06);
+  transform: none;
+}
+
+.skeleton {
+  border-radius: 10px;
+  background: linear-gradient(90deg, #f1f5f9 0%, #e2e8f0 45%, #f1f5f9 90%);
+  background-size: 240px 100%;
+  animation: skeletonShimmer 1.1s ease-in-out infinite;
+}
+
+.skeleton--title {
+  height: 14px;
+  width: 140px;
+}
+
+.skeleton--pill {
+  height: 18px;
+  width: 70px;
+  border-radius: 999px;
+}
+
+.skeleton--row {
+  height: 12px;
+  width: 100%;
+}
+
+@keyframes skeletonShimmer {
+  0% { background-position: -240px 0; }
+  100% { background-position: 240px 0; }
 }
 
 .kv {
@@ -568,6 +701,9 @@ body {
   .cardsRow {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  .input {
+    width: 220px;
+  }
   .grid3 {
     grid-template-columns: 1fr;
   }
@@ -576,5 +712,15 @@ body {
 @media (max-width: 620px) {
   .cardsRow {
     grid-template-columns: 1fr;
+  }
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .toolbar__right {
+    justify-content: flex-start;
+  }
+  .input {
+    width: 100%;
   }
 }
