@@ -25,7 +25,7 @@ def bc_worker_cfg() -> dict[str, Any]:
     """
     return {
         # 每轮训练的 episode 次数（一次 episode 会跑若干个 parameter update）
-        "episodes_per_train": _env_int("BC_EPISODES_PER_TRAIN", 1),
+        "episodes_per_train": _env_int("BC_EPISODES_PER_TRAIN", 5),
         # checkpoints/latest 保留条数（最旧的会被删除；best 单独保留1条）
         "latest_keep": _env_int("LATEST_KEEP", 10),
         # metrics/episodes.jsonl 只保留最近 N 行（避免文件无限增长）
@@ -35,7 +35,7 @@ def bc_worker_cfg() -> dict[str, Any]:
         # BC 监督学习 batch size：每次 update 采样多少个 step 样本
         "batch_size": _env_int("BC_BATCH_SIZE", 1024),
         # 每轮采集需要「接受」的 teacher rollout 条数（不达标的会丢弃并继续采样）
-        "train_rollout_count": _env_int("BC_TRAIN_ROLLOUT_COUNT", 1),
+        "train_rollout_count": _env_int("BC_TRAIN_ROLLOUT_COUNT", 60),
         # 单条 rollout 的最低覆盖率门槛（按 rollout.summary.coverage_max 判定）
         "train_min_rollout_coverage": _env_float("BC_TRAIN_MIN_ROLLOUT_COVERAGE", 0.70),
         # 单条 rollout 的最大步数（0 表示使用默认：size^2 * 400）
@@ -69,7 +69,7 @@ def ppo_worker_cfg() -> dict[str, Any]:
         # PPO clip range（重要：避免 policy update 过大）
         "clip": _env_float("PPO_CLIP", 0.2),
         # 每次 learn 对同一批 rollout 数据重复优化的 epoch 次数（SB3: n_epochs）
-        "ppo_epochs": _env_int("PPO_EPOCHS", 1),
+        "ppo_epochs": _env_int("PPO_EPOCHS", 10),
         # PPO minibatch size（SB3: batch_size）
         "minibatch_size": _env_int("PPO_MINIBATCH_SIZE", 512),
         # value loss 系数
@@ -79,7 +79,7 @@ def ppo_worker_cfg() -> dict[str, Any]:
         # 梯度裁剪
         "max_grad_norm": _env_float("PPO_MAX_GRAD_NORM", 0.5),
         # 每次 learn 采样的环境 step 数（SB3: n_steps）；不要设置过大，否则 rollout buffer 占用巨量内存
-        "rollout_steps": _env_int("PPO_ROLLOUT_STEPS", 3000),
+        "rollout_steps": _env_int("PPO_ROLLOUT_STEPS", 20 * 100 * 60),
         # PPO 采样时，单个 episode 的最大步数（0 表示使用默认：size^2 * 8）
         "rollout_max_steps": _env_int("PPO_ROLLOUT_MAX_STEPS", 0),
         # eval 每次固定 10 条（PRD 固定不可配；这里保留字段用于 worker 调用）
