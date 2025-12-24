@@ -2,15 +2,6 @@ import { Link } from "react-router-dom";
 import { fmtCoverage, fmtTime } from "../utils/format.js";
 import { deriveStageStatus, phaseStatusText, pillClassForStatus, stageStatusText, stageStatusTip } from "../utils/stageStatus.js";
 
-function CardRow({ label, value, mono }) {
-  return (
-    <div className="kv">
-      <div className="kv__k">{label}</div>
-      <div className={mono ? "kv__v mono" : "kv__v"}>{value}</div>
-    </div>
-  );
-}
-
 function CoverageBar({ value }) {
   const n = Number(value);
   const v = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : null;
@@ -37,28 +28,42 @@ function PhasePills({ bcStatus, ppoStatus }) {
   );
 }
 
+function Stat({ label, value, sub }) {
+  return (
+    <div className="stageStat">
+      <div className="stageStat__label">{label}</div>
+      <div className="stageStat__value">{value}</div>
+      {sub ? <div className="stageStat__sub">{sub}</div> : null}
+    </div>
+  );
+}
+
 function StageCard({ s }) {
   const stageStatus = deriveStageStatus(s.bc_status, s.ppo_status);
   return (
     <Link className={`stageCard stageCard--${stageStatus}`} to={`/stages/${s.stage_id}`}>
-      <div className="stageCard__top">
-        <div className="stageCard__title">
-          Stage {s.stage_id} <span className="muted">({s.size}x{s.size})</span>
+      <div className="stageCard__header">
+        <div className="stageCard__headerLeft">
+          <div className="stageCard__title">Stage {s.stage_id}</div>
+          <div className="stageCard__subtitle mono">
+            {s.size}x{s.size} · phase: {s.current_phase ?? "--"}
+          </div>
         </div>
         <div className={pillClassForStatus(stageStatus)} title={stageStatusTip(stageStatus)}>
           {stageStatusText(stageStatus)}
         </div>
       </div>
-      <div className="stageCard__body">
-        <CardRow label="Phase" value={s.current_phase ?? "--"} mono />
-        <CardRow label="阶段状态" value={<PhasePills bcStatus={s.bc_status} ppoStatus={s.ppo_status} />} />
-        <CardRow
-          label="Episode"
-          value={`BC ${s.bc_episode} / PPO ${s.ppo_episode} / Total ${s.total_episode}`}
-          mono
+      <div className="stageCard__stats">
+        <Stat
+          label="Episodes"
+          value={<span className="mono num">{s.total_episode ?? 0}</span>}
+          sub={<span className="mono subtle">BC {s.bc_episode ?? 0} / PPO {s.ppo_episode ?? 0}</span>}
         />
-        <CardRow label="Eval 覆盖率" value={<CoverageBar value={s.last_eval_coverage} />} />
-        <CardRow label="更新时间" value={fmtTime(s.updated_at_ms)} mono />
+        <Stat label="Eval Coverage" value={<CoverageBar value={s.last_eval_coverage} />} />
+      </div>
+      <div className="stageCard__footer">
+        <span className="mono subtle">{fmtTime(s.updated_at_ms)}</span>
+        <PhasePills bcStatus={s.bc_status} ppoStatus={s.ppo_status} />
       </div>
     </Link>
   );
@@ -67,15 +72,15 @@ function StageCard({ s }) {
 function SkeletonStageCard({ i }) {
   return (
     <div className="stageCard stageCard--skeleton" role="listitem" aria-label={`加载中 ${i + 1}`}>
-      <div className="stageCard__top">
+      <div className="stageCard__header">
         <div className="skeleton skeleton--title" />
         <div className="skeleton skeleton--pill" />
       </div>
-      <div className="stageCard__body">
+      <div className="stageCard__stats">
         <div className="skeleton skeleton--row" />
         <div className="skeleton skeleton--row" />
-        <div className="skeleton skeleton--row" />
-        <div className="skeleton skeleton--row" />
+      </div>
+      <div className="stageCard__footer">
         <div className="skeleton skeleton--row" />
       </div>
     </div>

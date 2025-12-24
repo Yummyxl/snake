@@ -1,14 +1,24 @@
 import { fmtCoverage, fmtTime } from "../utils/format.js";
 import { phaseStatusText, pillClassForStatus, stageStatusText, stageStatusTip } from "../utils/stageStatus.js";
 
-function Card({ title, status, tip, rows }) {
+function KvRow({ label, value, mono }) {
   return (
-    <div className="card">
-      <div className="cardHead">
-        <div className="cardTitle">{title}</div>
-        <div className={pillClassForStatus(status)} title={tip}>{title === "Stage" ? stageStatusText(status) : phaseStatusText(status)}</div>
+    <div className="kv">
+      <div className="kv__k">{label}</div>
+      <div className={mono ? "kv__v mono num" : "kv__v"}>{value}</div>
+    </div>
+  );
+}
+
+function MetricCard({ label, value, pill, rows }) {
+  return (
+    <div className="card metricCard">
+      <div className="metricCard__top">
+        <div className="metricCard__label">{label}</div>
+        {pill}
       </div>
-      <div className="cardBody">{rows.map((r) => (<div className="kv" key={r.k}><div className="kv__k">{r.k}</div><div className={r.mono ? "kv__v mono" : "kv__v"}>{r.v}</div></div>))}</div>
+      <div className="metricCard__value mono num">{value}</div>
+      <div className="metricCard__subgrid">{rows}</div>
     </div>
   );
 }
@@ -17,10 +27,39 @@ export default function StageDetailStatusCards({ item, stageStatus }) {
   const last = item?.last_eval;
   return (
     <div className="grid3">
-      <Card title="Stage" status={stageStatus} tip={stageStatusTip(stageStatus)} rows={[{ k: "尺寸", v: item ? `${item.size}x${item.size}` : "--", mono: true }, { k: "更新时间", v: fmtTime(item?.updated_at_ms), mono: true }, { k: "最近 Eval 覆盖率", v: fmtCoverage(item?.last_eval_coverage), mono: true }]} />
-      <Card title="BC" status={item?.bc_status} rows={[{ k: "Episode", v: item?.bc_episode ?? 0, mono: true }, { k: "最近 Eval 覆盖率", v: fmtCoverage(last?.phase === "bc" ? last?.coverage : null), mono: true }]} />
-      <Card title="PPO" status={item?.ppo_status} rows={[{ k: "Episode", v: item?.ppo_episode ?? 0, mono: true }, { k: "最近 Eval 覆盖率", v: fmtCoverage(last?.phase === "ppo" ? last?.coverage : null), mono: true }]} />
+      <MetricCard
+        label="Eval Coverage"
+        value={fmtCoverage(item?.last_eval_coverage)}
+        pill={<span className={`${pillClassForStatus(stageStatus)} pill--sm`} title={stageStatusTip(stageStatus)}>{stageStatusText(stageStatus)}</span>}
+        rows={(
+          <>
+            <KvRow label="Size" value={item ? `${item.size}x${item.size}` : "--"} mono />
+            <KvRow label="Updated" value={fmtTime(item?.updated_at_ms)} mono />
+          </>
+        )}
+      />
+      <MetricCard
+        label="BC Episode"
+        value={String(item?.bc_episode ?? 0)}
+        pill={<span className={`${pillClassForStatus(item?.bc_status)} pill--sm`}>BC {phaseStatusText(item?.bc_status)}</span>}
+        rows={(
+          <>
+            <KvRow label="Last Eval" value={fmtCoverage(last?.phase === "bc" ? last?.coverage : null)} mono />
+            <KvRow label="Status" value={phaseStatusText(item?.bc_status)} />
+          </>
+        )}
+      />
+      <MetricCard
+        label="PPO Episode"
+        value={String(item?.ppo_episode ?? 0)}
+        pill={<span className={`${pillClassForStatus(item?.ppo_status)} pill--sm`}>PPO {phaseStatusText(item?.ppo_status)}</span>}
+        rows={(
+          <>
+            <KvRow label="Last Eval" value={fmtCoverage(last?.phase === "ppo" ? last?.coverage : null)} mono />
+            <KvRow label="Status" value={phaseStatusText(item?.ppo_status)} />
+          </>
+        )}
+      />
     </div>
   );
 }
-

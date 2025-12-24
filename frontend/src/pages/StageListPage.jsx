@@ -17,15 +17,27 @@ export default function StageListPage() {
           后端不可用：{error}
         </Banner>
       ) : null}
-      {trainingHint ? (
-        <Banner
-          kind="info"
-          action={<Link className="link-inline" to={`/stages/${trainingHint.stage_id}`}>查看</Link>}
-        >
-          正在训练：Stage {trainingHint.stage_id} / {trainingHint.phase}
-        </Banner>
-      ) : null}
-      <header className="header"><div className="brand">chichi</div><div className="title">Stage 列表</div></header>
+      <div className="pageHeader">
+        <div className="pageHeader__left">
+          <div className="breadcrumbs">
+            <span className="breadcrumbs__current">Stages</span>
+          </div>
+          <div className="pageTitleRow">
+            <div className="pageTitle">Stage 列表</div>
+          </div>
+          <div className="pageMetaRow">
+            <span className="mono">共 {orderedItems.length} 个</span>
+            {trainingHint ? (
+              <Link className="link" to={`/stages/${trainingHint.stage_id}`}>
+                <span className="pill pill--blue pill--sm">Running: Stage {trainingHint.stage_id} / {String(trainingHint.phase).toUpperCase()}</span>
+              </Link>
+            ) : (
+              <span className="pill pill--gray pill--sm">Stopped</span>
+            )}
+          </div>
+        </div>
+        <div className="actionBar" />
+      </div>
       <StageCards items={orderedItems} loading={loading} />
     </div>
   );

@@ -1,232 +1,204 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fmtCoverage } from "../utils/format.js";
+import { IconFirst, IconNext, IconPause, IconPlay, IconPrev, IconX } from "./Icons.jsx";
+import { drawRolloutFrame } from "./rolloutPlayer/draw.js";
 
 function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
 }
 
-function clearCanvas(ctx, w, h) {
-  ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = "#0f172a";
-  ctx.fillRect(0, 0, w, h);
+function useAutoplay({ open, playing, speed, stepsLen, onStop, onNext }) {
+  useEffect(() => {
+    if (!open || !playing || stepsLen <= 1) return;
+    const ms = Math.max(16, Math.floor(200 / (speed || 1)));
+    const id = window.setInterval(() => {
+      const done = onNext();
+      if (done) onStop();
+    }, ms);
+    return () => window.clearInterval(id);
+  }, [open, onNext, onStop, playing, speed, stepsLen]);
 }
 
-function calcBoard(size, w, h) {
-  const cell = Math.floor(Math.min(w, h) / size);
-  const ox = Math.floor((w - cell * size) / 2);
-  const oy = Math.floor((h - cell * size) / 2);
-  return { cell, ox, oy };
+function useHotkeys({ open, canPlay, onPrev, onNext, onTogglePlay, onClose, onToggleGrid }) {
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") { onClose(); return; }
+      if (!canPlay) return;
+      if (e.key === "ArrowLeft") { e.preventDefault(); onPrev(); return; }
+      if (e.key === "ArrowRight") { e.preventDefault(); onNext(); return; }
+      if (e.key === " " || e.key === "Spacebar") { e.preventDefault(); onTogglePlay(); return; }
+      if (e.key === "g" || e.key === "G") { e.preventDefault(); onToggleGrid(); }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [canPlay, onClose, onNext, onPrev, onToggleGrid, onTogglePlay, open]);
 }
 
-function drawBoard(ctx, size, b) {
-  ctx.fillStyle = "#1e293b";
-  ctx.fillRect(b.ox, b.oy, b.cell * size, b.cell * size);
-}
-
-function drawGrid(ctx, size, b) {
-  if (b.cell < 6) return;
-  ctx.strokeStyle = "rgba(226, 232, 240, 0.10)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let i = 0; i <= size; i += 1) {
-    const x = b.ox + i * b.cell;
-    ctx.moveTo(x, b.oy);
-    ctx.lineTo(x, b.oy + size * b.cell);
-    const y = b.oy + i * b.cell;
-    ctx.moveTo(b.ox, y);
-    ctx.lineTo(b.ox + size * b.cell, y);
-  }
-  ctx.stroke();
-}
-
-function drawFood(ctx, b, food) {
-  if (!food || food.length !== 2) return;
-  const c = cellCenter(b, food);
-  const r = Math.max(3, Math.floor(b.cell * 0.34));
-  ctx.fillStyle = "#f59e0b";
-  ctx.beginPath();
-  ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = "rgba(255,255,255,0.75)";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.arc(c.x, c.y, Math.max(2, r - 1.5), 0, Math.PI * 2);
-  ctx.stroke();
-}
-
-function cellCenter(b, p) {
-  const x = b.ox + p[0] * b.cell + b.cell / 2;
-  const y = b.oy + p[1] * b.cell + b.cell / 2;
-  return { x, y };
-}
-
-function drawSnakePath(ctx, b, snake) {
-  if (!Array.isArray(snake) || snake.length < 2) return;
-  const head = snake[0];
-  const tail = snake[snake.length - 1];
-  const a = cellCenter(b, head);
-  const z = cellCenter(b, tail);
-  const grad = ctx.createLinearGradient(a.x, a.y, z.x, z.y);
-  grad.addColorStop(0, "#60a5fa");
-  grad.addColorStop(1, "#16a34a");
-  ctx.strokeStyle = grad;
-  ctx.lineWidth = Math.max(3, Math.floor(b.cell * 0.62));
-  ctx.lineJoin = "round";
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(a.x, a.y);
-  for (let i = 1; i < snake.length; i += 1) {
-    const p = snake[i];
-    if (!Array.isArray(p) || p.length !== 2) continue;
-    const c = cellCenter(b, p);
-    ctx.lineTo(c.x, c.y);
-  }
-  ctx.stroke();
-}
-
-function drawSnakeMarkers(ctx, b, snake) {
-  if (!Array.isArray(snake) || snake.length === 0) return;
-  const head = snake[0];
-  if (!Array.isArray(head) || head.length !== 2) return;
-  const c = cellCenter(b, head);
-  const r = Math.max(3, Math.floor(b.cell * 0.36));
-  ctx.fillStyle = "#60a5fa";
-  ctx.beginPath();
-  ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = "#ffffff";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(c.x, c.y, Math.max(2, r - 2), 0, Math.PI * 2);
-  ctx.stroke();
-}
-
-function drawSnake(ctx, b, snake) {
-  if (!Array.isArray(snake)) return;
-  ctx.globalAlpha = 0.18;
-  ctx.fillStyle = "#16a34a";
-  for (let i = 0; i < snake.length; i += 1) {
-    const p = snake[i];
-    if (!Array.isArray(p) || p.length !== 2) continue;
-    ctx.fillRect(b.ox + p[0] * b.cell, b.oy + p[1] * b.cell, b.cell, b.cell);
-  }
-  ctx.globalAlpha = 1;
-  drawSnakePath(ctx, b, snake);
-  drawSnakeMarkers(ctx, b, snake);
-}
-
-function drawFrame(canvas, size, step) {
-  if (!canvas || !step || !Number.isFinite(size) || size <= 0) return;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-  const w = canvas.width;
-  const h = canvas.height;
-  clearCanvas(ctx, w, h);
-  const b = calcBoard(size, w, h);
-  drawBoard(ctx, size, b);
-  drawGrid(ctx, size, b);
-  drawFood(ctx, b, Array.isArray(step?.food) ? step.food : null);
-  drawSnake(ctx, b, step?.snake);
-}
-
-export default function RolloutPlayerModal({ open, title, size, data, loading, error, onClose }) {
-  const steps = useMemo(() => (data?.rollout?.steps && Array.isArray(data.rollout.steps) ? data.rollout.steps : []), [data]);
-  const summary = data?.rollout?.summary || null;
+function usePlaybackState({ open, stepsLen, rolloutId }) {
   const [t, setT] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(6);
-  const canvasRef = useRef(null);
-  const step = steps[t] || null;
+  const [showGrid, setShowGrid] = useState(true);
 
-  useEffect(() => {
-    if (!open) return;
-    setT(0);
-    setPlaying(false);
-  }, [open, data?.rollout_id]);
+  useEffect(() => { if (open) { setT(0); setPlaying(false); } }, [open, rolloutId]);
+  useAutoplay({
+    open,
+    playing,
+    speed,
+    stepsLen,
+    onStop: () => setPlaying(false),
+    onNext: () => {
+      let done = false;
+      setT((cur) => { const next = clamp(cur + 1, 0, Math.max(0, stepsLen - 1)); done = next === cur; return next; });
+      return done;
+    },
+  });
 
-  useEffect(() => {
-    if (!open) return;
-    drawFrame(canvasRef.current, Number(size), step);
-  }, [open, size, step]);
+  return { t, setT, playing, setPlaying, speed, setSpeed, showGrid, setShowGrid };
+}
 
-  useEffect(() => {
-    if (!open || !playing) return;
-    if (steps.length <= 1) return;
-    const ms = Math.max(16, Math.floor(200 / (speed || 1)));
-    const id = window.setInterval(() => {
-      setT((cur) => {
-        const next = clamp(cur + 1, 0, Math.max(0, steps.length - 1));
-        if (next === cur) setPlaying(false);
-        return next;
-      });
-    }, ms);
-    return () => window.clearInterval(id);
-  }, [open, playing, speed, steps.length]);
+function HeaderPill({ children }) {
+  return <span className="pill pill--gray pill--sm mono num">{children}</span>;
+}
 
-  if (!open) return null;
+function PlayerHeader({ title, stepsLen, coverage, onClose }) {
   return (
-    <div className="modalOverlay modalOverlay--top" role="dialog" aria-modal="true" aria-label="回放">
-      <div className="modal modal--wide">
-        <div className="modal__title">{title || "回放"}</div>
-        <div className="playerMeta">
-          <div className="mono">steps: {steps.length || "--"} / coverage_max: {fmtCoverage(summary?.coverage_max ?? summary?.coverage)}</div>
-          <div className="mono subtle">
-            dir: {step?.dir ?? "--"}
-            {step?.dir_next ? ` → ${step.dir_next}` : ""}
-            {" / "}
-            action: {step?.action ?? "--"} / done: {String(Boolean(step?.done))}
-          </div>
-          {error ? <div className="dangerText">加载失败：{error}</div> : null}
-          {loading ? <div className="subtle">加载中...</div> : null}
-          {!loading && !error && steps.length === 0 ? <div className="subtle">该 rollout 未包含 steps，无法播放</div> : null}
+    <div className="playerHeader">
+      <div className="playerHeader__left">
+        <div className="playerHeader__title">{title || "Playback"}</div>
+        <div className="playerHeader__meta">
+          <HeaderPill>steps: {stepsLen || "--"}</HeaderPill>
+          <HeaderPill>coverage_max: {fmtCoverage(coverage)}</HeaderPill>
         </div>
-        <div className="playerBody">
-          <canvas ref={canvasRef} width={520} height={520} className="playerCanvas" />
-          <div className="playerControls">
-            <div className="playerRow">
-              <button className="btn" type="button" onClick={() => setPlaying((v) => !v)} disabled={steps.length <= 1}>
-                {playing ? "暂停" : "播放"}
-              </button>
-              <button className="btn" type="button" onClick={() => { setPlaying(false); setT(0); }} disabled={steps.length <= 1}>
-                首帧
-              </button>
-              <button className="btn" type="button" onClick={() => setT((x) => clamp(x - 1, 0, Math.max(0, steps.length - 1)))} disabled={steps.length <= 1}>
-                上一帧
-              </button>
-              <button className="btn" type="button" onClick={() => setT((x) => clamp(x + 1, 0, Math.max(0, steps.length - 1)))} disabled={steps.length <= 1}>
-                下一帧
-              </button>
-            </div>
-            <div className="playerRow">
-              <input
-                className="playerRange"
-                type="range"
-                min={0}
-                max={Math.max(0, steps.length - 1)}
-                value={t}
-                onChange={(e) => { setPlaying(false); setT(Number(e.target.value)); }}
-                disabled={steps.length <= 1}
-              />
-              <div className="mono">{t + 1}/{Math.max(1, steps.length)}</div>
-            </div>
-            <div className="playerRow">
-              <label className="subtle">倍速</label>
-              <select className="btn" value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
-                <option value={0.5}>0.5x</option>
-                <option value={1}>1x</option>
-                <option value={2}>2x</option>
-                <option value={4}>4x</option>
-                <option value={6}>6x</option>
-                <option value={8}>8x</option>
-              </select>
-              <span className="subtle mono">size: {size ?? "--"}</span>
-            </div>
-          </div>
+      </div>
+      <button className="iconBtn" type="button" onClick={onClose} aria-label="Close" title="Close">
+        <IconX />
+      </button>
+    </div>
+  );
+}
+
+function InspectorRow({ label, value }) {
+  return (
+    <div className="kv">
+      <div className="kv__k">{label}</div>
+      <div className="kv__v mono num">{value}</div>
+    </div>
+  );
+}
+
+function PlayerInspector({ step, t, stepsLen, size, summary }) {
+  return (
+    <div className="logPanel">
+      <div className="logPanel__title">Inspector</div>
+      <div className="cardBody" style={{ padding: 0 }}>
+        <InspectorRow label="Step" value={`${t + 1}/${Math.max(1, stepsLen)}`} />
+        <InspectorRow label="Dir" value={`${step?.dir ?? "--"}${step?.dir_next ? ` → ${step.dir_next}` : ""}`} />
+        <InspectorRow label="Action" value={step?.action ?? "--"} />
+        <InspectorRow label="Ate" value={String(Boolean(step?.info?.ate))} />
+        <InspectorRow label="Collision" value={step?.info?.collision ?? "--"} />
+        <InspectorRow label="Done" value={String(Boolean(step?.done))} />
+        <InspectorRow label="Size" value={size ?? "--"} />
+        <InspectorRow label="Max Length" value={summary?.length_max ?? summary?.snake_length_max ?? "--"} />
+      </div>
+    </div>
+  );
+}
+
+function PlayerDock({ stepsLen, t, setT, canPlay, playing, setPlaying, speed, setSpeed, showGrid, setShowGrid, size }) {
+  return (
+    <div className="playerDock" aria-label="player controls">
+      <div className="scrubRow">
+        <input className="scrubBar" type="range" min={0} max={Math.max(0, stepsLen - 1)} value={t} onChange={(e) => { setPlaying(false); setT(Number(e.target.value)); }} disabled={!canPlay} />
+        <div className="mono num">{t + 1}/{Math.max(1, stepsLen)}</div>
+      </div>
+      <div className="playerDock__row">
+        <div className="playerDock__left">
+          <label className="subtle">Speed</label>
+          <select className="btn" value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
+            <option value={0.5}>0.5x</option><option value={1}>1x</option><option value={2}>2x</option><option value={4}>4x</option><option value={6}>6x</option><option value={8}>8x</option>
+          </select>
+          <button className={`btn ${showGrid ? "btn--primary" : ""}`} type="button" onClick={() => setShowGrid((v) => !v)}>Grid</button>
         </div>
-        <div className="modal__actions">
-          <button className="btn" type="button" onClick={onClose}>关闭</button>
+        <div className="playerDock__center">
+          <button className="iconBtn iconBtn--lg" type="button" onClick={() => { setPlaying(false); setT(0); }} disabled={!canPlay} aria-label="First">
+            <IconFirst width="18" height="18" />
+          </button>
+          <button className="iconBtn iconBtn--lg" type="button" onClick={() => { setPlaying(false); setT((x) => clamp(x - 1, 0, Math.max(0, stepsLen - 1))); }} disabled={!canPlay} aria-label="Prev">
+            <IconPrev width="18" height="18" />
+          </button>
+          <button className="iconBtn iconBtn--lg" type="button" onClick={() => setPlaying((v) => !v)} disabled={!canPlay} aria-label={playing ? "Pause" : "Play"}>
+            {playing ? <IconPause width="18" height="18" /> : <IconPlay width="18" height="18" />}
+          </button>
+          <button className="iconBtn iconBtn--lg" type="button" onClick={() => { setPlaying(false); setT((x) => clamp(x + 1, 0, Math.max(0, stepsLen - 1))); }} disabled={!canPlay} aria-label="Next">
+            <IconNext width="18" height="18" />
+          </button>
+        </div>
+        <div className="playerDock__right mono subtle">size: {size ?? "--"}</div>
+      </div>
+    </div>
+  );
+}
+
+function useRolloutData(data) {
+  const steps = useMemo(() => (Array.isArray(data?.rollout?.steps) ? data.rollout.steps : []), [data]);
+  const summary = data?.rollout?.summary || null;
+  const coverage = summary?.coverage_max ?? summary?.coverage;
+  return { steps, summary, coverage };
+}
+
+function useCanvasDraw({ open, canvasRef, size, step, showGrid }) {
+  useEffect(() => {
+    if (!open) return;
+    drawRolloutFrame({ canvas: canvasRef.current, size: Number(size), step, showGrid });
+  }, [open, showGrid, size, step, canvasRef]);
+}
+
+function PlayerStage({ canvasRef, stepsLen, t, step, error, loading }) {
+  return (
+    <div className="playerStage">
+      <div className="playerCanvasWrap">
+        <canvas ref={canvasRef} width={560} height={560} className="playerCanvas" />
+      </div>
+      {error ? <div className="dangerText">加载失败：{error}</div> : null}
+      {loading ? <div className="subtle">加载中...</div> : null}
+      {!loading && !error && stepsLen === 0 ? <div className="subtle">该 rollout 未包含 steps，无法播放</div> : null}
+    </div>
+  );
+}
+
+function RolloutPlayerDialog({ open, title, size, data, loading, error, onClose }) {
+  const { steps, summary, coverage } = useRolloutData(data);
+  const pb = usePlaybackState({ open, stepsLen: steps.length, rolloutId: data?.rollout_id });
+  const canvasRef = useRef(null);
+  const step = steps[pb.t] || null;
+  useCanvasDraw({ open, canvasRef, size, step, showGrid: pb.showGrid });
+  useHotkeys({
+    open,
+    canPlay: steps.length > 1,
+    onClose,
+    onPrev: () => { pb.setPlaying(false); pb.setT((x) => clamp(x - 1, 0, Math.max(0, steps.length - 1))); },
+    onNext: () => { pb.setPlaying(false); pb.setT((x) => clamp(x + 1, 0, Math.max(0, steps.length - 1))); },
+    onTogglePlay: () => pb.setPlaying((v) => !v),
+    onToggleGrid: () => pb.setShowGrid((v) => !v),
+  });
+
+  return (
+    <div className="modalOverlay modalOverlay--center" role="dialog" aria-modal="true" aria-label="回放">
+      <div className="modal modal--player">
+        <PlayerHeader title={title} stepsLen={steps.length} coverage={coverage} onClose={onClose} />
+        <div className="playerLayout">
+          <PlayerStage canvasRef={canvasRef} stepsLen={steps.length} t={pb.t} step={step} error={error} loading={loading} />
+          <div className="playerSide"><PlayerInspector step={step} t={pb.t} stepsLen={steps.length} size={size} summary={summary} /></div>
+          <PlayerDock stepsLen={steps.length} t={pb.t} setT={pb.setT} canPlay={steps.length > 1} playing={pb.playing} setPlaying={pb.setPlaying} speed={pb.speed} setSpeed={pb.setSpeed} showGrid={pb.showGrid} setShowGrid={pb.setShowGrid} size={size} />
         </div>
       </div>
     </div>
   );
+}
+
+export default function RolloutPlayerModal({ open, title, size, data, loading, error, onClose }) {
+  if (!open) return null;
+  return <RolloutPlayerDialog open={open} title={title} size={size} data={data} loading={loading} error={error} onClose={onClose} />;
 }
