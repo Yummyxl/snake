@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 import torch
 
+from app.config import snake_reward_cfg
 from app.data.json_store import read_json
 from app.ml.encoding import encode_grid
 
@@ -103,6 +104,9 @@ def _sample_batch(
                     food=list(s.get("food") or [-1, -1]),
                     dir_name=str(s.get("dir") or ""),
                     device=device,
+                    time_left=float(s.get("_time_left") or 0.0),
+                    hunger=float(s.get("_hunger") or 0.0),
+                    coverage_norm=float(s.get("_coverage_norm") or 0.0),
                 )
             )
             ys.append(_action_id(s.get("action")))
@@ -124,12 +128,15 @@ class _RolloutCache:
         if path in self._cache:
             return self._cache[path]
         obj = read_json(path, default={})
-        steps = obj.get("steps") if isinstance(obj, dict) else None
+        if not isinstance(obj, dict):
+            raise ValueError(f"rollout json invalid: {path}")
+        meta = obj.get("meta") if isinstance(obj.get("meta"), dict) else {}
+        steps = obj.get("steps")
         out = [s for s in (steps or []) if isinstance(s, dict)]
         if not out:
             raise ValueError(f"rollout steps missing: {path}")
-        self._put(path, out)
-        return out
+        self._put(path, _with_aux_features(meta, out))
+        return self._cache[path]
 
     def _put(self, path: Path, steps: list[dict[str, Any]]) -> None:
         self._cache[path] = steps
@@ -163,3 +170,25 @@ class _WeightedSampler:
             if r < acc:
                 return it
         return self._items[-1]
+
+
+def _with_aux_features(meta: dict[str, Any], steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grace = int(snake_reward_cfg().get("hunger_grace_steps") or 0)
+    max_steps = int(meta.get("max_steps") or 0)
+    if max_steps <= 0:
+        last_t = max((int(s.get("t") or 0) for s in steps if isinstance(s, dict)), default=len(steps) - 1)
+        max_steps = max(1, int(last_t) + 1)
+    denom = float(max(1, max_steps))
+    size = int(meta.get("size") or meta.get("stage_id") or 0)
+    board = float(max(1, int(size) * int(size)))
+    since = 0
+    for idx, s in enumerate(steps):
+        t = int(s.get("t") if isinstance(s.get("t"), (int, float)) else idx)
+        s["_time_left"] = float(max(0.0, min(1.0, (float(max_steps) - float(t)) / denom)))
+        hunger_steps = max(0, int(since) - int(grace))
+        s["_hunger"] = float(max(0.0, min(1.0, float(hunger_steps) / denom)))
+        snake = s.get("snake") if isinstance(s.get("snake"), list) else []
+        s["_coverage_norm"] = float(len(snake)) / board
+        info = s.get("info") if isinstance(s.get("info"), dict) else {}
+        since = 0 if bool(info.get("ate")) else (since + 1)
+    return steps

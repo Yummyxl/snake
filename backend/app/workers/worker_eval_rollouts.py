@@ -100,13 +100,25 @@ def _rollout_one(
     return {"meta": meta, "summary": summary, "steps": steps}
 
 
-def _pick_action(model: torch.nn.Module, device: torch.device, size: int, pre: dict[str, Any]) -> str:
+def _pick_action(
+    model: torch.nn.Module,
+    device: torch.device,
+    size: int,
+    pre: dict[str, Any],
+    *,
+    time_left: float,
+    hunger: float,
+    coverage_norm: float,
+) -> str:
     x = encode_grid(
         size=size,
         snake=list(pre.get("snake") or []),
         food=list(pre.get("food") or [-1, -1]),
         dir_name=str(pre.get("dir") or ""),
         device=device,
+        time_left=float(time_left),
+        hunger=float(hunger),
+        coverage_norm=float(coverage_norm),
     )[None, :, :, :]
     with torch.no_grad():
         logits, _v = model(x)
@@ -254,11 +266,15 @@ def _eval_one(
 def _eval_index_item(eval_id: str, rid: str, summary: dict[str, Any], now: int) -> dict[str, Any]:
     cov = float(summary.get("coverage_max") or summary.get("coverage") or 0.0)
     sc = int(summary.get("steps") or 0)
+    length_max = summary.get("length_max")
+    reward_total = summary.get("reward_total")
     return {
         "id": rid,
         "episode": int(eval_id),
         "coverage": cov,
         "step_count": sc,
+        "length_max": int(length_max) if isinstance(length_max, (int, float)) else None,
+        "reward_total": float(reward_total) if isinstance(reward_total, (int, float)) else None,
         "created_at_ms": int(summary.get("created_at_ms") or now),
         "path": f"evals/latest/eval_{eval_id}/rollouts/rollout_{rid}.json",
         "is_best": False,
@@ -284,9 +300,11 @@ def _rollout_steps(
     best_len = len(env.snake)
     reward_total = 0.0
     flags = {"terminated": False, "truncated": False}
+    denom = float(max(1, int(env.max_steps)))
     for t in range(int(max_steps)):
+        time_left, hunger, coverage_norm = _aux_scalars(env, size=size, denom=denom)
         pre = env.snapshot()
-        action = _pick_action(model, device, size, pre)
+        action = _pick_action(model, device, size, pre, time_left=time_left, hunger=hunger, coverage_norm=coverage_norm)
         res = env.step(action)
         post = env.snapshot()
         reward_total += float(res.reward)
@@ -295,13 +313,18 @@ def _rollout_steps(
         if res.collision is not None:
             flags["terminated"] = True
             break
-        if res.truncated:
-            flags["truncated"] = True
-            break
-        if res.done:
-            flags["terminated"] = True
+        if res.truncated or res.done:
+            flags["truncated" if res.truncated else "terminated"] = True
             break
     return steps, best_len, flags, reward_total
+
+
+def _aux_scalars(env: SnakeEnv, *, size: int, denom: float) -> tuple[float, float, float]:
+    time_left = float(max(0.0, min(1.0, (float(env.max_steps) - float(env.steps)) / float(max(1.0, denom)))))
+    hunger_steps = max(0, int(env.steps_since_last_eat) - int(env.hunger_grace_steps))
+    hunger = float(max(0.0, min(1.0, float(hunger_steps) / float(max(1.0, denom)))))
+    coverage = float(len(env.snake)) / float(max(1, int(size) * int(size)))
+    return time_left, hunger, coverage
 
 
 def _step_obj(t: int, pre: dict[str, Any], post: dict[str, Any], action: str, res: Any, include_reward: bool) -> dict[str, Any]:

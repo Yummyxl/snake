@@ -17,7 +17,7 @@ class SnakeGymEnv(Env):
         self.base_seed = int(seed)
         self.max_steps = int(max_steps)
         self.action_space = spaces.Discrete(3)
-        self.observation_space = spaces.Box(0.0, 1.0, shape=(8, self.size, self.size), dtype=np.float32)
+        self.observation_space = spaces.Box(0.0, 1.0, shape=(11, self.size, self.size), dtype=np.float32)
         self._device = torch.device("cpu")
         self._actions = ["L", "S", "R"]
         self._episode = 0
@@ -45,6 +45,19 @@ class SnakeGymEnv(Env):
         if self._env is None:
             raise RuntimeError("env not reset")
         s = self._env.snapshot()
-        x = encode_grid(size=self.size, snake=list(s["snake"]), food=list(s["food"]), dir_name=str(s["dir"]), device=self._device)
+        denom = float(max(1, int(self._env.max_steps)))
+        time_left = float(max(0.0, min(1.0, (float(self._env.max_steps) - float(self._env.steps)) / denom)))
+        hunger_steps = max(0, int(self._env.steps_since_last_eat) - int(self._env.hunger_grace_steps))
+        hunger = float(max(0.0, min(1.0, float(hunger_steps) / denom)))
+        coverage_norm = float(len(self._env.snake)) / float(max(1, int(self.size) * int(self.size)))
+        x = encode_grid(
+            size=self.size,
+            snake=list(s["snake"]),
+            food=list(s["food"]),
+            dir_name=str(s["dir"]),
+            device=self._device,
+            time_left=time_left,
+            hunger=hunger,
+            coverage_norm=coverage_norm,
+        )
         return x.detach().cpu().numpy()
-

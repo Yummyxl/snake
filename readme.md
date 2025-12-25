@@ -56,6 +56,20 @@
 
 ---
 
+## 观测编码（C=11）
+
+当前模型输入是 `X ∈ R^{B×11×N×N}`（`N=size`），用于减少“奖励依赖时间/饥饿但观测缺失”导致的价值网络不稳定：
+
+- 空间 one-hot（8 通道）：`head`、`food`、`occupied`、`body_order`、`dir_onehot`（4 个方向，广播到 `N×N`）
+- 全局标量广播（3 通道，均广播到 `N×N`）：
+  - `time_left = clamp((max_steps - steps) / max_steps, 0, 1)`
+  - `hunger = clamp(max(0, steps_since_last_eat - hunger_grace_steps) / max_steps, 0, 1)`
+  - `coverage_norm = snake_length / (size^2)`
+
+注意：本项目已关闭“旧 checkpoint 的 8→11 自动兼容”；如果你目录里还存在旧版本生成的 `.pt`，启动训练会报 shape mismatch，需要先 reset stage 重新训练生成新 checkpoint。
+
+---
+
 ## 环境要求
 
 - 后端：`uv`（并遵守项目约束：涉及 Python 后端的运行命令必须使用 `uv` 包装），Python 版本要求见 `backend/pyproject.toml`（`>=3.11`）。
@@ -126,7 +140,7 @@ API 会在 `GET /api/stages/{id}` 的 `probe` 字段中暴露精简后的 runtim
      - `datas/stages/<id>/bc/checkpoints/best/bc_best_<eval_id>.pt`（若成为 best）
      - `datas/stages/<id>/bc/checkpoints/index.json`
 
-补充：BC 的 eval **不是每个 episode 都生成**，而是在“round 结束”统一生成一次；默认 `BC_EPISODES_PER_TRAIN=5`，所以通常要到 episode=5 才会看到第一轮 eval（或你点击“停止”触发一次 stop-eval）。
+补充：BC 的 eval **不是每个 episode 都生成**，而是在“round 结束”统一生成一次；默认 `BC_EPISODES_PER_TRAIN=4`，所以通常要到 episode=4 才会看到第一轮 eval（或你点击“停止”触发一次 stop-eval）。
 
 ### PPO（Stable-Baselines3 PPO）
 
@@ -138,6 +152,11 @@ API 会在 `GET /api/stages/{id}` 的 `probe` 字段中暴露精简后的 runtim
 2. **评估 + checkpoint**
    - eval 同样生成 rollout 文件并写入 `datas/stages/<id>/ppo/evals/...`，区别是 `include_reward=True`，汇总里会含 `reward_total`。
    - PPO checkpoint 存储会把 SB3 policy 导出到统一的 `cnn_vit_v1` state（便于与 BC 共享权重结构）。
+
+3. **BC→PPO 继承（只继承策略）**
+   - 默认 `PPO_SHARE_FEATURES_EXTRACTOR=0`：actor/critic 使用两份 features extractor（都从 BC 继承），切断 critic 更新对 actor 表征的影响。
+   - 只继承策略相关权重：features_extractor + `action head`；`value head` 会做零初始化，并在开训前做 value warmup（`PPO_VALUE_WARMUP_*`）。
+   - 前 `PPO_FREEZE_POLICY_ROUNDS` 轮会冻结 policy，只训练 value（避免一开始就破坏 BC policy）。
 
 ### 权重继承（课程学习的落地方式）
 
@@ -303,33 +322,50 @@ BACKEND_HOST=127.0.0.1 FRONTEND_HOST=127.0.0.1 ./scripts/start
 
 ### BC 训练参数（`backend/app/config.py: bc_worker_cfg()`）
 
-- `BC_EPISODES_PER_TRAIN`（默认 `5`）：每个 round 的训练 episode 数（决定 eval 的出现频率）。
+- `BC_EPISODES_PER_TRAIN`（默认 `4`）：每个 round 的训练 episode 数（决定 eval 的出现频率）。
 - `BC_LR`（默认 `3e-4`）
-- `BC_BATCH_SIZE`（默认 `1024`）
-- `BC_TRAIN_ROLLOUT_COUNT`（默认 `50`）：每轮采集达标 teacher rollout 条数。
+- `BC_BATCH_SIZE`（默认 `2048`）
+- `BC_TRAIN_ROLLOUT_COUNT`（默认 `10`）：每轮采集达标 teacher rollout 条数。
 - `BC_TRAIN_MIN_ROLLOUT_COVERAGE`（默认 `0.70`）
-- `BC_TRAIN_ROLLOUT_MAX_STEPS`（默认 `0`，代表用默认 `size^2 * 400`）
+- `BC_TRAIN_ROLLOUT_MAX_STEPS`（默认 `2048`；设为 `0` 则回退到 `size^2 * 400`）
 - `BC_TRAIN_MAX_ATTEMPTS`（默认 `100000`）
-- `BC_EVAL_MAX_STEPS`（默认 `0`，代表用默认 `size^2 * 40`）
+- `BC_EVAL_MAX_STEPS`（默认 `2048`；设为 `0` 则回退到 `size^2 * 40`）
 - `LATEST_KEEP`（默认 `10`）：latest checkpoints 保留数量。
 - `METRICS_KEEP`（默认 `200`）：metrics 文件保留最近 N 行（防止无限增长）。
 
 ### PPO 训练参数（`backend/app/config.py: ppo_worker_cfg()`）
 
 - `PPO_EPISODES_PER_TRAIN`（默认 `1`）
-- `PPO_LR`（默认 `2.5e-4`）
+- `PPO_LR`（默认 `1e-4`）
 - `PPO_GAMMA`（默认 `0.99`）
 - `PPO_GAE_LAMBDA`（默认 `0.95`）
-- `PPO_CLIP`（默认 `0.2`）
-- `PPO_EPOCHS`（默认 `1`）
-- `PPO_MINIBATCH_SIZE`（默认 `512`）
+- `PPO_CLIP`（默认 `0.1`）
+- `PPO_EPOCHS`（默认 `4`）
+- `PPO_MINIBATCH_SIZE`（默认 `2048`）
 - `PPO_VF_COEF`（默认 `0.5`）
-- `PPO_ENT_COEF`（默认 `0.01`）
+- `PPO_ENT_COEF`（默认 `0.0`）
 - `PPO_MAX_GRAD_NORM`（默认 `0.5`）
-- `PPO_ROLLOUT_STEPS`（默认 `20 * 100 * 6`）
-- `PPO_ROLLOUT_MAX_STEPS`（默认 `0`，代表用默认 `size^2 * 8`）
-- `PPO_EVAL_MAX_STEPS`（默认 `0`，代表用默认 `size^2 * 40`）
+- `PPO_ROLLOUT_STEPS`（默认 `8192`）
+- `PPO_ROLLOUT_MAX_STEPS`（默认 `2048`）
+- `PPO_EVAL_MAX_STEPS`（默认 `2048`）
+- 继承与稳定性：
+  - `PPO_SHARE_FEATURES_EXTRACTOR`（默认 `0`）
+  - `PPO_TARGET_KL`（默认 `0.02`）
+  - `PPO_FREEZE_POLICY_ROUNDS`（默认 `1`）
+  - `PPO_FREEZE_BN`（默认 `1`）
+  - `PPO_VALUE_WARMUP_STEPS`（默认 `20000`）
+  - `PPO_VALUE_WARMUP_EPOCHS`（默认 `2`）
+  - `PPO_VALUE_WARMUP_BATCH`（默认 `1024`）
+  - `PPO_VALUE_WARMUP_LR`（默认 `1e-4`）
+  - `PPO_VALUE_WARMUP_MAX_STEPS`（默认 `5000`）
 - `LATEST_KEEP` / `METRICS_KEEP`：同上
+
+### Snake 奖励参数（`backend/app/config.py: snake_reward_cfg()`）
+
+- `SNAKE_HUNGER_BUDGET`（默认 `2.0`）
+- `SNAKE_HUNGER_GRACE_STEPS`（默认 `50`）
+- `SNAKE_TERMINAL_INCOMPLETE_BETA`（默认 `50.0`）
+- `SNAKE_COMPLETION_BONUS`（默认 `50.0`）
 
 ---
 
@@ -364,7 +400,7 @@ BACKEND_HOST=127.0.0.1 FRONTEND_HOST=127.0.0.1 ./scripts/start
 
 ## 常见问题（排障）
 
-- **BC 已跑到 Episode 3 但没有 eval**：正常；BC eval 在 round 结束才生成（默认 `BC_EPISODES_PER_TRAIN=5`），或点击“停止”触发一次 stop-eval。
+- **BC 已跑到 Episode 3 但没有 eval**：正常；BC eval 在 round 结束才生成（默认 `BC_EPISODES_PER_TRAIN=4`），或点击“停止”触发一次 stop-eval。
 - **端口被占用**：先运行 `./scripts/stop`，或修改 `BACKEND_PORT/FRONTEND_PORT` 后重试。
 - **Stage 显示 running 但训练进程不在**：`GET /api/stages/{id}` 的 `probe.stale_running=true` 表示状态与进程不一致；可点击“停止”让后端修复状态为 paused，或执行 reset。
 - **依赖安装慢/重复下载**：设置 `UV_CACHE_DIR` 到稳定磁盘路径；默认使用 `<repo>/.uv-cache/`。

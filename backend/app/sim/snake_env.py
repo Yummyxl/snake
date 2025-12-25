@@ -4,7 +4,7 @@ import random
 from dataclasses import dataclass
 from typing import Any
 
-from app.config import SnakeEnvCfg
+from app.config import SnakeEnvCfg, snake_reward_cfg
 from app.sim.snake_rollout_gen import DIRS, DIR_NAMES, now_ms, to_xy
 
 Coord = tuple[int, int]  # (row, col)
@@ -24,8 +24,14 @@ class SnakeEnv:
         self.cfg = cfg
         self.size = int(cfg.size)
         self.max_steps = int(cfg.max_steps)
+        reward_cfg = snake_reward_cfg()
+        self.hunger_budget = float(reward_cfg.get("hunger_budget") or 0.0)
+        self.hunger_grace_steps = int(reward_cfg.get("hunger_grace_steps") or 0)
+        self.terminal_incomplete_beta = float(reward_cfg.get("terminal_incomplete_beta") or 0.0)
+        self.completion_bonus = float(reward_cfg.get("completion_bonus") or 0.0)
         self.rng = random.Random(int(cfg.seed))
         self.steps = 0
+        self.steps_since_last_eat = 0
         self.snake, self.cur_dir = self._init_snake_and_dir()
         self.food = self._spawn_food()
 
@@ -39,21 +45,55 @@ class SnakeEnv:
         nxt = (head[0] + dr, head[1] + dc)
         self.steps += 1
         truncated = self.steps >= self.max_steps
+        self.steps_since_last_eat += 1
         if not _in_bounds(nxt, self.size):
-            return _death_step(self.size, truncated, "wall")
+            return self._terminal_step(truncated=truncated, collision="wall")
         grow = nxt == self.food
+        if grow:
+            self.steps_since_last_eat = 0
         if _hits_body(nxt, self.snake, grow=grow):
-            return _death_step(self.size, truncated, "self")
+            return self._terminal_step(truncated=truncated, collision="self")
         dist_delta = _dist_delta(head, nxt, self.food)
         self._advance(nxt, next_dir, grow)
-        done = truncated or len(self.snake) >= self.size * self.size
+        done = bool(truncated or self._is_complete())
+        reward = self._step_reward(ate=grow, death=False, dist_delta=dist_delta, done=done)
         return StepResult(
-            reward=_reward(self.size, ate=grow, death=False, dist_delta=dist_delta),
+            reward=reward,
             done=done,
             ate=grow,
             collision=None,
             truncated=truncated,
         )
+
+    def _terminal_step(self, *, truncated: bool, collision: str) -> StepResult:
+        reward = self._step_reward(ate=False, death=True, dist_delta=0.0, done=True)
+        return StepResult(reward=reward, done=True, ate=False, collision=str(collision), truncated=bool(truncated))
+
+    def _step_reward(self, *, ate: bool, death: bool, dist_delta: float, done: bool) -> float:
+        r = _reward(self.size, ate=ate, death=death, dist_delta=dist_delta)
+        r += self._hunger_penalty()
+        if done:
+            r += self._terminal_adjust()
+        return float(r)
+
+    def _hunger_penalty(self) -> float:
+        if self.hunger_budget <= 0 or self.max_steps <= 0:
+            return 0.0
+        if int(self.steps_since_last_eat) <= int(self.hunger_grace_steps):
+            return 0.0
+        return -float(self.hunger_budget) / float(max(1, int(self.max_steps)))
+
+    def _terminal_adjust(self) -> float:
+        if self._is_complete():
+            return float(self.completion_bonus)
+        if self.terminal_incomplete_beta <= 0:
+            return 0.0
+        total = int(self.size) * int(self.size)
+        cov = float(len(self.snake)) / float(max(1, total))
+        return -float(self.terminal_incomplete_beta) * float(max(0.0, 1.0 - cov))
+
+    def _is_complete(self) -> bool:
+        return len(self.snake) >= self.size * self.size
 
     def _advance(self, nxt: Coord, next_dir: int, grow: bool) -> None:
         if not grow:
@@ -124,16 +164,6 @@ def _reward(size: int, *, ate: bool, death: bool, dist_delta: float) -> float:
     w_dist = 0.02
     dd = float(max(-2.0, min(2.0, float(dist_delta or 0.0))))
     return (w_eat if ate else 0.0) - (w_death if death else 0.0) + (w_dist * dd) - w_step
-
-
-def _death_step(size: int, truncated: bool, collision: str) -> StepResult:
-    return StepResult(
-        reward=_reward(size, ate=False, death=True, dist_delta=0.0),
-        done=True,
-        ate=False,
-        collision=str(collision),
-        truncated=bool(truncated),
-    )
 
 
 def _in_bounds(p: Coord, size: int) -> bool:

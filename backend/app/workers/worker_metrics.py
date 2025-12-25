@@ -30,12 +30,25 @@ def _metrics_obj(stage_id: int, phase: str, episode: int, size: int, metrics: di
     step_count = None if not isinstance(metrics, dict) else metrics.get("step_count")
     reward_mean = None if not isinstance(metrics, dict) else metrics.get("reward_mean")
     loss = None if not isinstance(metrics, dict) else metrics.get("ppo_loss")
-    return {
+    out = {
         **base,
         "step_count": int(step_count) if isinstance(step_count, (int, float)) else None,
         "reward_mean": float(reward_mean) if isinstance(reward_mean, (int, float)) else None,
         "ppo_loss": float(loss) if isinstance(loss, (int, float)) else None,
     }
+    if isinstance(metrics, dict):
+        for k in (
+            "approx_kl",
+            "clip_fraction",
+            "entropy_loss",
+            "policy_gradient_loss",
+            "value_loss",
+            "explained_variance",
+        ):
+            v = metrics.get(k)
+            if isinstance(v, (int, float)):
+                out[k] = float(v)
+    return out
 
 
 def _append_jsonl_capped(path: Path, obj: dict[str, Any], keep: int) -> None:

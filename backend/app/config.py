@@ -13,6 +13,15 @@ class SnakeEnvCfg:
     max_steps: int
 
 
+def snake_reward_cfg() -> dict[str, Any]:
+    return {
+        "hunger_budget": _env_float("SNAKE_HUNGER_BUDGET", 2.0),
+        "hunger_grace_steps": _env_int("SNAKE_HUNGER_GRACE_STEPS", 50),
+        "terminal_incomplete_beta": _env_float("SNAKE_TERMINAL_INCOMPLETE_BETA", 50.0),
+        "completion_bonus": _env_float("SNAKE_COMPLETION_BONUS", 50.0),
+    }
+
+
 def bc_worker_cfg() -> dict[str, Any]:
     """
     BC worker 配置（集中在此处，其他模块禁止直接读 env）。
@@ -20,12 +29,12 @@ def bc_worker_cfg() -> dict[str, Any]:
     round 流程：
     1) 采集 train_rollout_count 条「达标」teacher rollout
     2) 训练 episodes_per_train 个 episode（episode 内 update 次数≈总 steps / batch_size）
-    3) eval 固定生成 10 条 rollout
+    3) eval 固定生成 5 条 rollout
     4) 保存 checkpoint（latest + best）
     """
     return {
         # 每轮训练的 episode 次数（一次 episode 会跑若干个 parameter update）
-        "episodes_per_train": _env_int("BC_EPISODES_PER_TRAIN", 5),
+        "episodes_per_train": _env_int("BC_EPISODES_PER_TRAIN", 4),
         # checkpoints/latest 保留条数（最旧的会被删除；best 单独保留1条）
         "latest_keep": _env_int("LATEST_KEEP", 10),
         # metrics/episodes.jsonl 只保留最近 N 行（避免文件无限增长）
@@ -33,19 +42,19 @@ def bc_worker_cfg() -> dict[str, Any]:
         # AdamW 学习率（BC）
         "lr": _env_float("BC_LR", 3e-4),
         # BC 监督学习 batch size：每次 update 采样多少个 step 样本
-        "batch_size": _env_int("BC_BATCH_SIZE", 1024),
+        "batch_size": _env_int("BC_BATCH_SIZE", 2048),
         # 每轮采集需要「接受」的 teacher rollout 条数（不达标的会丢弃并继续采样）
-        "train_rollout_count": _env_int("BC_TRAIN_ROLLOUT_COUNT", 60),
+        "train_rollout_count": _env_int("BC_TRAIN_ROLLOUT_COUNT", 10),
         # 单条 rollout 的最低覆盖率门槛（按 rollout.summary.coverage_max 判定）
         "train_min_rollout_coverage": _env_float("BC_TRAIN_MIN_ROLLOUT_COVERAGE", 0.70),
-        # 单条 rollout 的最大步数（0 表示使用默认：size^2 * 400）
-        "train_rollout_max_steps": _env_int("BC_TRAIN_ROLLOUT_MAX_STEPS", 0),
+        # 单条 rollout 的最大步数（默认 2048；设为 0 则回退到 2048）
+        "train_rollout_max_steps": _env_int("BC_TRAIN_ROLLOUT_MAX_STEPS", 2048),
         # 为凑够 train_rollout_count 条达标 rollout，最多尝试生成的次数（超出则采集失败报错）
         "train_max_attempts": _env_int("BC_TRAIN_MAX_ATTEMPTS", 100000),
-        # eval 每次固定 10 条（PRD 固定不可配；这里保留字段用于 worker 调用）
-        "eval_rollouts": 10,
-        # eval rollout 的最大步数（0 表示使用默认：size^2 * 40；训练采集的 max_steps 仍是 size^2 * 400）
-        "eval_max_steps": _env_int("BC_EVAL_MAX_STEPS", 0),
+        # eval 每次固定 5 条（PRD 固定不可配；这里保留字段用于 worker 调用）
+        "eval_rollouts": 5,
+        # eval rollout 的最大步数（默认 2048；设为 0 则回退到 2048）
+        "eval_max_steps": _env_int("BC_EVAL_MAX_STEPS", 2048),
     }
 
 
@@ -61,31 +70,51 @@ def ppo_worker_cfg() -> dict[str, Any]:
         # metrics/episodes.jsonl 只保留最近 N 行（避免文件无限增长）
         "metrics_keep": _env_int("METRICS_KEEP", 200),
         # Adam 学习率（PPO）
-        "lr": _env_float("PPO_LR", 2.5e-4),
+        "lr": _env_float("PPO_LR", 1e-4),
         # 折扣因子
         "gamma": _env_float("PPO_GAMMA", 0.99),
         # GAE lambda
         "gae_lambda": _env_float("PPO_GAE_LAMBDA", 0.95),
         # PPO clip range（重要：避免 policy update 过大）
-        "clip": _env_float("PPO_CLIP", 0.2),
+        "clip": _env_float("PPO_CLIP", 0.1),
         # 每次 learn 对同一批 rollout 数据重复优化的 epoch 次数（SB3: n_epochs）
         "ppo_epochs": _env_int("PPO_EPOCHS", 4),
         # PPO minibatch size（SB3: batch_size）
-        "minibatch_size": _env_int("PPO_MINIBATCH_SIZE", 512),
+        "minibatch_size": _env_int("PPO_MINIBATCH_SIZE", 2048),
         # value loss 系数
         "vf_coef": _env_float("PPO_VF_COEF", 0.5),
         # entropy bonus 系数（鼓励探索；太大可能发散）
-        "ent_coef": _env_float("PPO_ENT_COEF", 0.01),
+        "ent_coef": _env_float("PPO_ENT_COEF", 0.0),
         # 梯度裁剪
         "max_grad_norm": _env_float("PPO_MAX_GRAD_NORM", 0.5),
         # 每次 learn 采样的环境 step 数（SB3: n_steps）；不要设置过大，否则 rollout buffer 占用巨量内存
-        "rollout_steps": _env_int("PPO_ROLLOUT_STEPS", 20 * 100 * 60),
-        # PPO 采样时，单个 episode 的最大步数（0 表示使用默认：size^2 * 400）
-        "rollout_max_steps": _env_int("PPO_ROLLOUT_MAX_STEPS", 0),
-        # eval 每次固定 10 条（PRD 固定不可配；这里保留字段用于 worker 调用）
-        "eval_rollouts": 10,
-        # eval rollout 的最大步数（0 表示使用默认：size^2 * 40）
-        "eval_max_steps": _env_int("PPO_EVAL_MAX_STEPS", 0),
+        "rollout_steps": _env_int("PPO_ROLLOUT_STEPS", 8192),
+        # PPO 采样时，单个 episode 的最大步数（0 表示使用默认：2048）
+        "rollout_max_steps": _env_int("PPO_ROLLOUT_MAX_STEPS", 2048),
+        # eval 每次固定 5 条（PRD 固定不可配；这里保留字段用于 worker 调用）
+        "eval_rollouts": 5,
+        # eval rollout 的最大步数（0 表示使用默认：2048）
+        "eval_max_steps": _env_int("PPO_EVAL_MAX_STEPS", 2048),
+        **_ppo_finetune_cfg(),
+    }
+
+
+def _ppo_finetune_cfg() -> dict[str, Any]:
+    return {
+        # 是否共享 actor/critic 的 features_extractor（强烈建议禁用：切断 critic 更新对 actor 表征的影响）
+        "share_features_extractor": _env_int("PPO_SHARE_FEATURES_EXTRACTOR", 0),
+        # 目标 KL（<=0 表示禁用；用于限制单次更新幅度，避免从 BC 继承后直接崩）
+        "target_kl": _env_float("PPO_TARGET_KL", 0.02),
+        # 前 N 轮冻结 policy，只训练 value（给 critic 对齐机会，避免第一轮破坏 BC）
+        "freeze_policy_rounds": _env_int("PPO_FREEZE_POLICY_ROUNDS", 1),
+        # 继承 BC 时强烈建议冻结 BatchNorm（SB3 rollout=eval, train=train；BN 会导致 old/new logprob 不一致而崩）
+        "freeze_bn": _env_int("PPO_FREEZE_BN", 1),
+        # value warmup（从 BC 继承时；<=0 表示禁用）
+        "value_warmup_steps": _env_int("PPO_VALUE_WARMUP_STEPS", 20000),
+        "value_warmup_lr": _env_float("PPO_VALUE_WARMUP_LR", 1e-4),
+        "value_warmup_epochs": _env_int("PPO_VALUE_WARMUP_EPOCHS", 2),
+        "value_warmup_batch": _env_int("PPO_VALUE_WARMUP_BATCH", 1024),
+        "value_warmup_max_steps": _env_int("PPO_VALUE_WARMUP_MAX_STEPS", 5000),
     }
 
 

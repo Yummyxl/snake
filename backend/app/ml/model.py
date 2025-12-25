@@ -10,7 +10,7 @@ from app.ml.encoding import build_2d_sincos_pe
 
 @dataclass(frozen=True)
 class ModelCfg:
-    in_channels: int = 8
+    in_channels: int = 11
     stride: int = 2
     d_model: int = 256
     n_layers: int = 6

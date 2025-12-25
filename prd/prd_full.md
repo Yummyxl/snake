@@ -222,8 +222,8 @@
 - 继承仅允许在 Stage 启动时选择；启动后不允许更改继承来源。
 
 ### 6.2 BC 阶段训练循环
-- 每轮训练流程：清理 `bc/train_rollouts/` → 采集 rollout（数量=rollout_count，默认 2048） → 训练 episodes_per_train（默认 10）→ eval → 保存 checkpoint + eval rollouts + 指标。
-- 每次 eval 生成 EVAL_ROLLOUTS（默认 10）条 eval rollouts（固定不可配）。
+- 每轮训练流程：清理 `bc/train_rollouts/` → 采集 teacher rollout（数量=train_rollout_count，默认 10；按单条 `coverage_max >= min_rollout_coverage` 准入）→ 训练 episodes_per_train（默认 4）→ eval（固定 5 条）→ 保存 checkpoint + eval rollouts + 指标。
+- rollout 最大步数：train_rollout_max_steps 与 eval_max_steps 默认均为 `2048`（可通过环境变量覆盖）。
 - 停止条件：人工根据 eval 覆盖率决定停止或切换到 PPO。
 - 暂停：必须立即保存状态，不等待 episode 结束。
 - 恢复：episode 计数延续；恢复后必须重新采集训练 rollouts，不复用暂停前 batch。
@@ -232,18 +232,16 @@
   - 停止过程中（进程仍存活）必须禁止恢复/完成。
 - 训练 rollouts 采集准入：按“单个 rollout 覆盖率达标”判断，而不是平均值；仅当该 rollout 的 `coverage_max >= min_rollout_coverage` 才可进入训练 batch，不达标的 rollout 直接丢弃并继续重采样直到满足数量或达到 max_attempts。
 - BC 训练 rollouts（每轮采集前清空，仅保留当前 batch）：
-  - `data/stages/{id}/bc/train_rollouts/summary.json`
-  - `data/stages/{id}/bc/train_rollouts/index.json`
-  - `data/stages/{id}/bc/train_rollouts/rollouts/rollout_{rollout_id}.json`
+  - `datas/stages/{id}/bc/train_rollouts/summary.json`
+  - `datas/stages/{id}/bc/train_rollouts/index.json`
+  - `datas/stages/{id}/bc/train_rollouts/rollouts/rollout_{rollout_id}.json`
   - `collect_id` 命名：由 episode 生成，9 位补零（如 `000000123`）；`rollout_id = {collect_id}-{k}`（k 从 1 开始）。
   - steps 坐标：统一 `[x,y]`（x=列，y=行）；动作空间：相对动作 `L/S/R`（左转/直行/右转）；必须在每步保存 `dir` 以便解释相对动作。
   - BC 阶段不产出 reward；rollout steps 中不写 `reward` 字段（或写 null），保留给 PPO 使用。
 
 ### 6.3 PPO 阶段训练循环
-- 每轮训练流程：清理 `ppo/train_rollouts/` → 采集 rollout（默认 2048） → 训练 episodes_per_train（默认 10）→ eval → 保存 checkpoint + eval rollouts + 指标。
-- 每次 eval 生成 EVAL_ROLLOUTS（默认 10）条 eval rollouts（固定不可配）。
-- rollout 最大步数：`size^2 * 400`，超过则丢弃并重采样（仅训练采集）。
-- PPO 使用 stable-baselines3（SB3）实现，采集来自真实 SnakeEnv 的单环境自采样（不做多环境并行）；不启用拒绝策略。
+- PPO 使用 stable-baselines3（SB3）实现：不落盘 `train_rollouts`（使用 SB3 rollout buffer），每轮 `learn(total_timesteps=rollout_steps)` 后 eval（固定 5 条）并保存 checkpoint+指标。
+- 单环境自采样（不做多环境并行）；episode 最大步数与 eval 最大步数默认均为 `2048`（可通过环境变量覆盖）。
 - 停止条件：人工根据 eval 覆盖率决定停止。
 - 暂停/恢复规则同 BC。
 
@@ -263,18 +261,48 @@
 
 ### 6.6 覆盖率定义与 PPO 奖励函数
 - 覆盖率定义：coverage = snake_length / (size^2)；snake_length 包含蛇头在内的当前长度。
-- delta_length = length_t - length_{t-1}（仅在吃到食物时为 1，否则为 0）。
-- 奖励函数（每步）：`r = w_len * delta_length - w_step * step - w_death * death`
-  - w_len=1.5（提高吃食物收益，强化进食动机）
-  - w_step=0.01 * (10/size)^2（按尺寸缩放，避免大图步惩罚过强）
-  - w_death=3.0（加强死亡惩罚，鼓励稳妥存活）
-- 说明：覆盖率与长度严格一致，奖励采用 delta_length 以避免重复计分；覆盖率主要用于评估与 best 选择。
+- 目标：鼓励吃食物并最终“吃完整张地图”（snake_length == size^2），同时避免不进食的循环策略。
+- PPO 奖励（每步，示意）：
+  - 吃到食物：`+1`
+  - 撞墙/撞身：`-10`
+  - 距离 shaping：`+0.02 * clip(dist_delta, -2, 2)`（dist_delta 为「离食物曼哈顿距离」的减少量）
+  - 饥饿惩罚（可配）：超过 `hunger_grace_steps` 未进食后，每步追加 `-(hunger_budget / max_steps)`（将总惩罚预算均摊到 episode）
+  - 终局调整（可配，done 时）：
+    - 若完成（覆盖率=1.0）：`+completion_bonus`
+    - 若未完成（包含 truncated 超时/死亡）：`-terminal_incomplete_beta * (1 - coverage)`
+- 说明：覆盖率与长度严格一致；覆盖率主要用于评估与 best 选择，奖励用于引导行为与避免局部最优。
+- 奖励配置（环境变量，默认值与 `backend/app/config.py` 同步）：
+  - `SNAKE_HUNGER_BUDGET=2.0`
+  - `SNAKE_HUNGER_GRACE_STEPS=50`
+  - `SNAKE_TERMINAL_INCOMPLETE_BETA=50.0`
+  - `SNAKE_COMPLETION_BONUS=50.0`
 
 ### 6.7 全局常量（固定不可配）
 - BEST_KEEP=1（best 列表保留数量）
 - LATEST_KEEP=10（latest 列表保留数量，适用于 checkpoint/eval/manual rollouts）
-- EVAL_ROLLOUTS=10（每次 eval 生成 rollout 数量）
+- EVAL_ROLLOUTS=5（每次 eval 生成 rollout 数量）
 - MANUAL_ROLLOUTS=10（手动生成 rollout 数量）
+
+### 6.8 训练配置默认值（与 `backend/app/config.py` 同步）
+- BC（环境变量 → 默认值）：
+  - `BC_EPISODES_PER_TRAIN=4`
+  - `BC_LR=3e-4`
+  - `BC_BATCH_SIZE=2048`
+  - `BC_TRAIN_ROLLOUT_COUNT=10`
+  - `BC_TRAIN_MIN_ROLLOUT_COVERAGE=0.70`
+  - `BC_TRAIN_ROLLOUT_MAX_STEPS=2048`
+  - `BC_EVAL_MAX_STEPS=2048`
+- PPO（环境变量 → 默认值）：
+  - `PPO_EPISODES_PER_TRAIN=1`
+  - `PPO_LR=1e-4`
+  - `PPO_CLIP=0.1`
+  - `PPO_EPOCHS=4`
+  - `PPO_MINIBATCH_SIZE=2048`
+  - `PPO_ROLLOUT_STEPS=8192`
+  - `PPO_ROLLOUT_MAX_STEPS=2048`
+  - `PPO_EVAL_MAX_STEPS=2048`
+  - 继承与稳定性：`PPO_SHARE_FEATURES_EXTRACTOR=0`、`PPO_FREEZE_POLICY_ROUNDS=1`、`PPO_FREEZE_BN=1`、`PPO_TARGET_KL=0.02`
+  - value warmup：`PPO_VALUE_WARMUP_STEPS=20000`、`PPO_VALUE_WARMUP_EPOCHS=2`、`PPO_VALUE_WARMUP_BATCH=1024`、`PPO_VALUE_WARMUP_LR=1e-4`、`PPO_VALUE_WARMUP_MAX_STEPS=5000`
 
 ## 7. 数据与模型（核心实体/字段/状态机）
 ### 7.1 核心实体
@@ -334,12 +362,8 @@ load_checkpoint(phase="bc", type="best")  # PPO 起点
 if resume_from_pause:
   load_checkpoint(latest_checkpoint)
 while user_not_stop:
-  clear(ppo/train_rollouts)               # 清理上一轮训练数据
-  init_training_buffers(phase="ppo")
-  rollouts = collect_ppo_rollouts(count=2048, max_steps=size^2*400)
-  for i in range(episodes_per_train):    # eval 频率由 episodes_per_train 定义
-    train_ppo(rollouts)
-    log_ppo_metrics(episode=i)
+  sb3_learn(total_timesteps=rollout_steps)  # SB3 on-policy rollout buffer（不落盘 train_rollouts）
+  log_ppo_metrics()
   eval_result = eval_policy(phase="ppo", rollouts=EVAL_ROLLOUTS)
   save_checkpoint(phase="ppo", metrics=eval_result.summary)
   update_best_latest(phase="ppo", rule=best_rule)
@@ -347,7 +371,7 @@ while user_not_stop:
 ```
 
 ### 7.5 数据文件 JSON Schema（核心文件）
-- `data/index.json`（Stage 列表）
+- `datas/index.json`（Stage 列表）
 ```json
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
@@ -361,19 +385,19 @@ while user_not_stop:
   }
 }
 ```
-- `data/stages/{size}/stage.json`（Stage 元信息）
+- `datas/stages/{size}/stage.json`（Stage 元信息）
 
-#### 训练 Rollout（BC/PPO，train_rollouts）
-- `data/stages/{id}/{phase}/train_rollouts/rollouts/rollout_{rollout_id}.json`
+#### 训练 Rollout（当前实现：仅 BC 采集；PPO 使用 SB3 rollout buffer 不落盘）
+- `datas/stages/{id}/bc/train_rollouts/rollouts/rollout_{rollout_id}.json`
   - 顶层结构：`{meta, summary, steps}`
   - `meta` 必须包含：`stage_id`、`phase`、`kind=train`、`coord=xy`、`action_space=relative_lsr`、`step_state=pre_action`、`collect_id`、`rollout_id`、`created_at_ms`、`max_steps`
   - `summary` 推荐字段：`coverage_max`、`snake_length_max`、`steps`、`terminated`、`truncated`
   - `steps[t]` 语义（关键）：记录 **执行 action 之前** 的观测 `state_t`，并保存该步采取的 `action_t`（用于 BC 监督），`done` 表示 **执行 action 之后** 是否终止。
   - `steps[t]` 必须包含：`t`、`snake`（head 在 index=0）、`food`、`dir`、`action`、`done`；`info` 可选扩展（如 `ate/collision`）
   - 为了回放更直观，推荐额外写入：`snake_next`、`food_next`、`dir_next`（执行 action 之后的状态快照；最后一步无 next 时可缺省）
-- `data/stages/{id}/{phase}/train_rollouts/summary.json`
+- `datas/stages/{id}/{phase}/train_rollouts/summary.json`
   - 必须包含：本轮 `collect_id`、采集 target（rollout_count/min_rollout_coverage/max_steps/max_attempts）、采集结果（accepted/rejected/coverage_min/coverage_max/step_count）、rollouts 列表（id/coverage/step_count/path）
-- `data/stages/{id}/{phase}/train_rollouts/index.json`
+- `datas/stages/{id}/{phase}/train_rollouts/index.json`
   - 仅维护 latest：`{collect_id, episode_start, accepted, rejected, created_at_ms, path}`
 
 #### Rollout 生成（参考实现）
@@ -384,11 +408,11 @@ while user_not_stop:
     - 偶数 size：使用 Hamiltonian cycle（闭环），可无限前进。
     - 奇数 size：使用蛇形 path（非闭环），走到尽头则 done。
     - Hamiltonian + shortcut：以 Hamiltonian cycle 作为安全兜底；每步仅允许在 `L/S/R` 三个相对动作候选中选择“更接近 food 的近路”，且必须满足不穿越 tail 的安全约束，否则回退为沿 cycle 前进。
-  - `dir` 为当前朝向；动作空间使用相对动作 `L/S/R`，每步的 `action` 由 `cur_dir -> next_dir` 推导得到，保证回放与训练一致。
+- `dir` 为当前朝向；动作空间使用相对动作 `L/S/R`，每步的 `action` 由 `cur_dir -> next_dir` 推导得到，保证回放与训练一致。
 - Eval rollout（真实环境 + 当前 policy，自采样）：
   - Eval 必须在“真实 Snake 环境”中运行，按当前 policy 每步选 `L/S/R` 并推进环境，直到撞墙/撞身或达到 max_steps。
-  - 默认 eval max_steps：`size^2 * 40`（避免 stop 时 eval 过慢）；训练采集 max_steps 仍为 `size^2 * 400`。
-  - Eval 使用确定性 seed：`seed = eval_seed(stage_id, phase, eval_id, k)`（k=1..10），确保可复现与 best 判定稳定。
+  - 默认 eval max_steps：`2048`；训练采集 max_steps 也为 `2048`。
+  - Eval 使用确定性 seed：`seed = eval_seed(stage_id, phase, eval_id, k)`（k=1..5），确保可复现与 best 判定稳定。
   - 真实环境初始化：蛇身为直线，长度固定为 2；初始化位置与朝向为“随机采样（由 seed 决定，可复现）”，且保证 `S`（直行）第一步不撞墙/不撞身。
   - 统一要求：BC teacher rollout 生成器、Eval 真实环境、以及后续 PPO rollout 采集，蛇身初始化长度均固定为 2；初始化分布保持一致（随机但可复现）。
   - 非闭环 path（奇数 size）初始化必须保证蛇身连续且不跨端点“回绕”（避免出现首尾不相邻导致方向无法定义）。
@@ -404,7 +428,7 @@ while user_not_stop:
   }
 }
 ```
-- `data/stages/{size}/state.json`（Stage 状态）
+- `datas/stages/{size}/state.json`（Stage 状态）
 ```json
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
@@ -420,7 +444,7 @@ while user_not_stop:
   }
 }
 ```
-- `data/stages/{size}/{phase}/checkpoints/index.json`（checkpoint 列表）
+- `datas/stages/{size}/{phase}/checkpoints/index.json`（checkpoint 列表）
 ```json
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
@@ -448,9 +472,9 @@ while user_not_stop:
 }
 ```
 - 说明：best.maxItems=BEST_KEEP，latest.maxItems=LATEST_KEEP。
-- `data/stages/{size}/{phase}/checkpoints/latest/{checkpoint_id}.pt`（latest checkpoint 文件）
-- `data/stages/{size}/{phase}/checkpoints/best/{checkpoint_id}.pt`（best checkpoint 文件）
-- `data/stages/{size}/{phase}/metrics/episodes.jsonl`（单行指标；前端默认展示：BC=bc_loss；PPO=ppo_loss+reward_mean）
+- `datas/stages/{size}/{phase}/checkpoints/latest/{checkpoint_id}.pt`（latest checkpoint 文件）
+- `datas/stages/{size}/{phase}/checkpoints/best/{checkpoint_id}.pt`（best checkpoint 文件）
+- `datas/stages/{size}/{phase}/metrics/episodes.jsonl`（单行指标；前端默认展示：BC=bc_loss；PPO=ppo_loss+reward_mean）
 ```json
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
@@ -470,8 +494,8 @@ while user_not_stop:
   }
 }
 ```
-- `data/stages/{size}/{phase}/evals/latest/eval_{id}/summary.json`（评估摘要，latest）
-- `data/stages/{size}/{phase}/evals/best/eval_{id}/summary.json`（评估摘要，best）
+- `datas/stages/{size}/{phase}/evals/latest/eval_{id}/summary.json`（评估摘要，latest）
+- `datas/stages/{size}/{phase}/evals/best/eval_{id}/summary.json`（评估摘要，best）
   - 说明：best 的判定以 `evals/index.json` 的 best/latest 列表为准；`summary.json` 仅存储评估结果本身，不额外标记“是否 best”。
 ```json
 {
@@ -486,8 +510,8 @@ while user_not_stop:
   }
 }
 ```
-- `data/stages/{size}/{phase}/evals/latest/eval_{id}/rollouts/rollout_{id}-{k}.json`（单条 rollout，k=1..10）
-- `data/stages/{size}/{phase}/evals/best/eval_{id}/rollouts/rollout_{id}-{k}.json`（单条 rollout：best 仅保留 1 条，k 为被选中的那条）
+- `datas/stages/{size}/{phase}/evals/latest/eval_{id}/rollouts/rollout_{id}-{k}.json`（单条 rollout，k=1..5）
+- `datas/stages/{size}/{phase}/evals/best/eval_{id}/rollouts/rollout_{id}-{k}.json`（单条 rollout：best 仅保留 1 条，k 为被选中的那条）
   - 说明：manual rollout 的目录结构与 eval 完全一致：`manual/latest/...`、`manual/best/...`，文件命名规则相同（rollout_{id}-{k}.json）。
   - 说明：evals/index.json 的每个 item.path 建议直接指向单条 rollout 文件（而非 summary.json），后端从 rollout 文件中读取 summary 字段用于列表展示。
 ```json
@@ -571,8 +595,12 @@ Stage (1) ────< Rollout (via phase + source)
 > 目的：BC/PPO 使用同构网络；Stage10/20/30 仅输入 size 不同，支持 strict=True 直接继承参数。
 
 #### 7.7.1 输入编码（grid）
-- 输入张量：`X ∈ R^{B×C×N×N}`，`N=size`，默认 `C=8`：
-  - `head`（1）、`food`（1）、`occupied`（1）、`body_order`（1）、`dir_onehot`（4，广播到 N×N）。
+- 输入张量：`X ∈ R^{B×C×N×N}`，`N=size`，默认 `C=11`：
+  - 空间 one-hot（8 通道）：`head`（1）、`food`（1）、`occupied`（1）、`body_order`（1）、`dir_onehot`（4，广播到 N×N）。
+  - 全局标量广播（3 通道，均广播到 N×N）：
+    - `time_left = clamp((max_steps - steps) / max_steps, 0, 1)`
+    - `hunger = clamp(max(0, steps_since_last_eat - hunger_grace_steps) / max_steps, 0, 1)`
+    - `coverage_norm = snake_length / (size^2)`
 - action 空间：离散 3（相对动作 `L/S/R`）。
 
 #### 7.7.2 CNN backbone（局部特征）
@@ -603,7 +631,7 @@ Stage (1) ────< Rollout (via phase + source)
 
 #### 7.7.7 继承与加载规则（BC↔PPO，PPO↔BC）
 - 默认 strict=True 全量加载（同构网络）：
-  - BC→PPO：PPO 起点加载同尺寸 BC best checkpoint。
+  - BC→PPO：PPO 起点加载同尺寸 BC best checkpoint（只继承策略相关权重：features_extractor + action head；value head 零初始化后 warmup）。
   - PPO→BC：Stage20/30 默认继承前置 Stage 的 PPO best checkpoint。
 - 若未来结构演进导致 key 不匹配：允许 strict=False，缺失参数按初始化策略处理，并记录 missing/unexpected keys 以便排查。
 
@@ -749,7 +777,7 @@ Stage (1) ────< Rollout (via phase + source)
   - `/app/api`（路由与接口定义）
   - `/app/services`（训练、存储、回放、指标服务）
   - `/app/models`（数据结构/Schema/状态机）
-- `/data`
+- `/datas`
   - `/stages`（按 Stage 保存训练数据）
 - `/scripts`（检查脚本/运行辅助脚本）
 - 前端路由：
@@ -759,10 +787,9 @@ Stage (1) ────< Rollout (via phase + source)
   - `/rollouts/:id` → Rollout 播放（5.5，可为页面或 modal）
 
 ## 19. 配置文件规范
-- 主配置文件：`config.yaml`（默认）。
-- 必须支持环境变量覆盖（如 `TRAIN_ROLLOUT_COUNT` 覆盖 yaml 中 `rollout_count`）。
-- 必须明确 Stage 维度参数（不同 size 的 batch/模型参数）。
-- 配置加载后只读，禁止运行时修改文件。
+- 主配置入口：`backend/app/config.py`（集中读取环境变量并提供默认值）。
+- 必须支持环境变量覆盖（如 `PPO_ROLLOUT_STEPS`、`BC_TRAIN_ROLLOUT_MAX_STEPS`、`SNAKE_HUNGER_BUDGET`）。
+- 配置加载后按“只读”使用（其他模块禁止直接读 env，需通过 config 函数获取）。
 
 ## 20. 错误码规范
 - 4001：状态冲突（如 running 时删除/重复启动）。

@@ -9,7 +9,6 @@ from app.data.stages_repo import (
     discover_stage_ids,
     read_stage_meta,
     read_stage_phase_index,
-    read_stage_phase_json,
     read_stage_state,
     write_stage_state,
 )
@@ -350,52 +349,21 @@ def _eval_from_index(
         return None
     if not (_DATAS_DIR / "stages" / str(stage_id) / phase / rel).exists():
         return None
-    summary = _read_eval_summary(stage_id, phase, rel)
+    steps = raw.get("step_count")
+    length_max = raw.get("length_max")
+    reward_total = raw.get("reward_total")
     return {
         "rollout_id": rollout_id,
         "phase": phase,
         "source": "eval",
         "episode": int(raw.get("episode") or 0),
         "coverage": raw.get("coverage"),
-        "steps": _pick_steps(summary, raw),
-        "length_max": _pick_length_max(summary),
-        "reward_total": _pick_reward_total(summary),
+        "steps": int(steps) if isinstance(steps, (int, float)) else None,
+        "length_max": int(length_max) if isinstance(length_max, (int, float)) else None,
+        "reward_total": float(reward_total) if isinstance(reward_total, (int, float)) else None,
         "created_at_ms": int(raw.get("created_at_ms") or 0),
         "is_best": bool(is_best or raw.get("is_best")),
     }
-
-
-def _read_eval_summary(stage_id: int, phase: str, rel_path: str) -> dict[str, Any] | None:
-    if not rel_path:
-        return None
-    data = read_stage_phase_json(_DATAS_DIR, stage_id, phase, rel_path)
-    if not isinstance(data, dict):
-        return None
-    nested = data.get("summary")
-    return nested if isinstance(nested, dict) else data
-
-
-def _pick_steps(summary: dict[str, Any] | None, raw: dict[str, Any]) -> int | None:
-    if isinstance(summary, dict):
-        v = summary.get("steps")
-        if isinstance(v, (int, float)):
-            return int(v)
-    v = raw.get("step_count")
-    return int(v) if isinstance(v, (int, float)) else None
-
-
-def _pick_length_max(summary: dict[str, Any] | None) -> int | None:
-    if not isinstance(summary, dict):
-        return None
-    v = summary.get("length_max")
-    return int(v) if isinstance(v, (int, float)) else None
-
-
-def _pick_reward_total(summary: dict[str, Any] | None) -> float | None:
-    if not isinstance(summary, dict):
-        return None
-    v = summary.get("reward_total")
-    return float(v) if isinstance(v, (int, float)) else None
 
 
 def _merge_eval_item(prev: dict[str, Any] | None, nxt: dict[str, Any]) -> dict[str, Any]:
