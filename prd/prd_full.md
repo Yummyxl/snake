@@ -265,13 +265,15 @@
 - PPO 奖励（每步，示意）：
   - 吃到食物：`+1`
   - 撞墙/撞身：`-10`
-  - 距离 shaping：`+0.02 * clip(dist_delta, -2, 2)`（dist_delta 为「离食物曼哈顿距离」的减少量）
+  - potential-based shaping（距离势函数）：`+dist_shaping_weight * clip(dist_delta, -dist_shaping_clip, dist_shaping_clip)`（dist_delta 为「离食物曼哈顿距离」的减少量）
   - 饥饿惩罚（可配）：超过 `hunger_grace_steps` 未进食后，每步追加 `-(hunger_budget / max_steps)`（将总惩罚预算均摊到 episode）
   - 终局调整（可配，done 时）：
     - 若完成（覆盖率=1.0）：`+completion_bonus`
     - 若未完成（包含 truncated 超时/死亡）：`-terminal_incomplete_beta * (1 - coverage)`
 - 说明：覆盖率与长度严格一致；覆盖率主要用于评估与 best 选择，奖励用于引导行为与避免局部最优。
 - 奖励配置（环境变量，默认值与 `backend/app/config.py` 同步）：
+  - `SNAKE_DIST_SHAPING_WEIGHT=0.02`
+  - `SNAKE_DIST_SHAPING_CLIP=2.0`
   - `SNAKE_HUNGER_BUDGET=2.0`
   - `SNAKE_HUNGER_GRACE_STEPS=50`
   - `SNAKE_TERMINAL_INCOMPLETE_BETA=50.0`
@@ -295,14 +297,31 @@
 - PPO（环境变量 → 默认值）：
   - `PPO_EPISODES_PER_TRAIN=1`
   - `PPO_LR=1e-4`
+  - `PPO_GAMMA=0.999`
   - `PPO_CLIP=0.1`
   - `PPO_EPOCHS=4`
   - `PPO_MINIBATCH_SIZE=2048`
   - `PPO_ROLLOUT_STEPS=8192`
   - `PPO_ROLLOUT_MAX_STEPS=2048`
   - `PPO_EVAL_MAX_STEPS=2048`
-  - 继承与稳定性：`PPO_SHARE_FEATURES_EXTRACTOR=0`、`PPO_FREEZE_POLICY_ROUNDS=1`、`PPO_FREEZE_BN=1`、`PPO_TARGET_KL=0.02`
-  - value warmup：`PPO_VALUE_WARMUP_STEPS=20000`、`PPO_VALUE_WARMUP_EPOCHS=2`、`PPO_VALUE_WARMUP_BATCH=1024`、`PPO_VALUE_WARMUP_LR=1e-4`、`PPO_VALUE_WARMUP_MAX_STEPS=5000`
+  - GAE：`PPO_GAE_LAMBDA=0.95`（actor） / `PPO_CRITIC_GAE_LAMBDA=1.0`（critic；Decoupled-GAE）
+  - 继承与稳定性：`PPO_SHARE_FEATURES_EXTRACTOR=0`、`PPO_FREEZE_POLICY_ROUNDS=8`、`PPO_FREEZE_BN=1`、`PPO_TARGET_KL=0.02`、`PPO_TARGET_KL_EARLY_STOP=1`
+  - critic 表征冻结/解冻（仅 BC→PPO 且 share_features_extractor=0 生效）：
+    - `PPO_VF_FREEZE_ROUNDS=30`（前 N 轮冻结 vf_features_extractor，只训 value head）
+    - `PPO_VF_UNFREEZE_VIT_ROUNDS=10`（之后先仅解冻 vit，再全量解冻）
+    - `PPO_VF_COLLAPSE_FEATURE_STD=1e-3`（探针集上 vf 表征退化阈值；<=0 关闭兜底）
+    - `PPO_VF_COLLAPSE_REFREEZE_ROUNDS=10`（触发兜底后额外 refreeze 轮数）
+  - value warmup：`PPO_VALUE_WARMUP_STEPS=20000`、`PPO_VALUE_WARMUP_EPOCHS=8`、`PPO_VALUE_WARMUP_BATCH=1024`、`PPO_VALUE_WARMUP_LR=1e-4`、`PPO_VALUE_WARMUP_MAX_STEPS=5000`
+
+### 6.9 PPO 诊断日志（用于排查崩溃/发散）
+- 写入路径：`datas/stages/<stage_id>/ppo/diagnostics/events.jsonl`（JSONL；每行一个事件；保留最近 2000 行）
+- 事件类型与字段（必须）：
+  - `kind=init`：记录 init_plan、关键训练超参快照（lr/clip/n_steps/batch/target_kl 等）、probe 集合大小。
+  - `kind=value_warmup`：记录 warmup loss、采样轨迹统计（episode 长度/终止类型/回报均值）、return 分布统计（mean/std/min/max）。
+  - `kind=train_round`：记录 actor 是否冻结、vf_stage（vf 表征冻结/解冻阶段）、rollout_buffer 分布统计（advantages/returns/values/rewards/log_probs）、训练采样终局统计（wall/self/truncated）、episode length 分布、ate rate、probe 固定状态集上的 entropy/max_prob/argmax 动作占比，以及 pre→post KL；并追加 probe_features（pi/vf 表征的 batch-std 均值，用于识别“表征塌成常数”）。
+  - `kind=vf_fallback`：当探针集上 vf 表征退化（vf_std_mean < PPO_VF_COLLAPSE_FEATURE_STD）时触发；记录阈值、refreeze_until_episode，并将 vf_features_extractor 回滚为 pi_features_extractor。
+  - `kind=eval`：记录 eval summary、每条 rollout item，并标记 `short_death_count`/`catastrophic`（用于识别“全短命死亡”式崩溃）。
+- 用途：当 PPO 崩溃时，用诊断日志定位属于「critic/advantage 发散」还是「policy 更新过大/概率塌缩」还是「采样分布已退化为短命自杀轨迹」。
 
 ## 7. 数据与模型（核心实体/字段/状态机）
 ### 7.1 核心实体
@@ -409,10 +428,12 @@ while user_not_stop:
     - 奇数 size：使用蛇形 path（非闭环），走到尽头则 done。
     - Hamiltonian + shortcut：以 Hamiltonian cycle 作为安全兜底；每步仅允许在 `L/S/R` 三个相对动作候选中选择“更接近 food 的近路”，且必须满足不穿越 tail 的安全约束，否则回退为沿 cycle 前进。
 - `dir` 为当前朝向；动作空间使用相对动作 `L/S/R`，每步的 `action` 由 `cur_dir -> next_dir` 推导得到，保证回放与训练一致。
+- Train rollout（BC teacher 轨迹）：
+  - seed 必须随 round 变化但仍可复现：推荐由 `(stage_id, phase, collect_id, attempt)` 组合得到，避免使用裸 `attempt` 导致“每轮采样同一批轨迹→loss 很快到 0 但泛化很差”。
 - Eval rollout（真实环境 + 当前 policy，自采样）：
   - Eval 必须在“真实 Snake 环境”中运行，按当前 policy 每步选 `L/S/R` 并推进环境，直到撞墙/撞身或达到 max_steps。
   - 默认 eval max_steps：`2048`；训练采集 max_steps 也为 `2048`。
-  - Eval 使用确定性 seed：`seed = eval_seed(stage_id, phase, eval_id, k)`（k=1..5），确保可复现与 best 判定稳定。
+  - Eval 使用固定评估集（强制可对比）：同一 Stage/Phase 下，seed **不随 eval_id 改变**，仅由 `(stage_id, phase, k)` 决定；`eval_id` 仅用于产物命名。（k=1..5）
   - 真实环境初始化：蛇身为直线，长度固定为 2；初始化位置与朝向为“随机采样（由 seed 决定，可复现）”，且保证 `S`（直行）第一步不撞墙/不撞身。
   - 统一要求：BC teacher rollout 生成器、Eval 真实环境、以及后续 PPO rollout 采集，蛇身初始化长度均固定为 2；初始化分布保持一致（随机但可复现）。
   - 非闭环 path（奇数 size）初始化必须保证蛇身连续且不跨端点“回绕”（避免出现首尾不相邻导致方向无法定义）。

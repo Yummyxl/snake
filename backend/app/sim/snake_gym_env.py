@@ -38,7 +38,18 @@ class SnakeGymEnv(Env):
         res = self._env.step(a)
         obs = self._obs()
         terminated = bool(res.done and not res.truncated)
-        info = {"ate": bool(res.ate), "collision": res.collision}
+        length = len(self._env.snake)
+        denom = float(max(1, int(self.size) * int(self.size)))
+        info = {
+            "ate": bool(res.ate),
+            "collision": res.collision,
+            "terminated": bool(terminated),
+            "truncated": bool(res.truncated),
+            "snake_length": int(length),
+            "coverage": float(length) / denom,
+            "steps": int(self._env.steps),
+            "steps_since_last_eat": int(self._env.steps_since_last_eat),
+        }
         return obs, float(res.reward), terminated, bool(res.truncated), info
 
     def _obs(self) -> np.ndarray:

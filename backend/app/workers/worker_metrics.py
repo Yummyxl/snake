@@ -22,6 +22,23 @@ def append_metrics_line(
     _append_jsonl_capped(path, obj, int(cfg.get("metrics_keep") or 200))
 
 
+def append_diag_line(
+    datas_dir: Path,
+    stage_id: int,
+    phase: str,
+    episode: int,
+    kind: str,
+    cfg: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+) -> None:
+    path = datas_dir / "stages" / str(stage_id) / phase / "diagnostics" / "events.jsonl"
+    obj = {"stage_id": int(stage_id), "phase": str(phase), "episode": int(episode), "kind": str(kind), "timestamp_ms": int(time.time() * 1000)}
+    if isinstance(payload, dict):
+        obj.update(payload)
+    keep = int(cfg.get("metrics_keep") or 200)
+    _append_jsonl_capped(path, obj, max(2000, keep))
+
+
 def _metrics_obj(stage_id: int, phase: str, episode: int, size: int, metrics: dict[str, Any] | None) -> dict[str, Any]:
     base = {"stage_id": stage_id, "phase": phase, "episode": episode, "timestamp_ms": int(time.time() * 1000)}
     if phase == "bc":

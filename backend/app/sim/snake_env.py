@@ -25,6 +25,8 @@ class SnakeEnv:
         self.size = int(cfg.size)
         self.max_steps = int(cfg.max_steps)
         reward_cfg = snake_reward_cfg()
+        self.dist_shaping_weight = float(reward_cfg.get("dist_shaping_weight") or 0.0)
+        self.dist_shaping_clip = float(reward_cfg.get("dist_shaping_clip") or 0.0)
         self.hunger_budget = float(reward_cfg.get("hunger_budget") or 0.0)
         self.hunger_grace_steps = int(reward_cfg.get("hunger_grace_steps") or 0)
         self.terminal_incomplete_beta = float(reward_cfg.get("terminal_incomplete_beta") or 0.0)
@@ -70,7 +72,7 @@ class SnakeEnv:
         return StepResult(reward=reward, done=True, ate=False, collision=str(collision), truncated=bool(truncated))
 
     def _step_reward(self, *, ate: bool, death: bool, dist_delta: float, done: bool) -> float:
-        r = _reward(self.size, ate=ate, death=death, dist_delta=dist_delta)
+        r = _reward(ate=ate, death=death, dist_delta=dist_delta, dist_weight=self.dist_shaping_weight, dist_clip=self.dist_shaping_clip)
         r += self._hunger_penalty()
         if done:
             r += self._terminal_adjust()
@@ -125,7 +127,9 @@ class SnakeEnv:
 
 
 def eval_seed(stage_id: int, phase: str, eval_id: str, k: int) -> int:
-    base = int(eval_id) * 1000 + int(stage_id) * 10 + (0 if phase == "bc" else 5)
+    _ = eval_id
+    phase_off = 0 if str(phase) == "bc" else 500_000
+    base = int(stage_id) * 1_000_000 + int(phase_off)
     return base + int(k)
 
 
@@ -157,13 +161,14 @@ def _apply_relative(cur_dir: int, action: str) -> int:
     return cur_dir
 
 
-def _reward(size: int, *, ate: bool, death: bool, dist_delta: float) -> float:
+def _reward(*, ate: bool, death: bool, dist_delta: float, dist_weight: float, dist_clip: float) -> float:
     w_eat = 1.0
     w_death = 10.0
     w_step = 0.0
-    w_dist = 0.02
-    dd = float(max(-2.0, min(2.0, float(dist_delta or 0.0))))
-    return (w_eat if ate else 0.0) - (w_death if death else 0.0) + (w_dist * dd) - w_step
+    dd = 0.0
+    if float(dist_weight) != 0.0 and float(dist_clip) > 0.0:
+        dd = float(max(-float(dist_clip), min(float(dist_clip), float(dist_delta or 0.0))))
+    return (w_eat if ate else 0.0) - (w_death if death else 0.0) + (float(dist_weight) * dd) - w_step
 
 
 def _in_bounds(p: Coord, size: int) -> bool:

@@ -155,7 +155,8 @@ API 会在 `GET /api/stages/{id}` 的 `probe` 字段中暴露精简后的 runtim
 
 3. **BC→PPO 继承（只继承策略）**
    - 默认 `PPO_SHARE_FEATURES_EXTRACTOR=0`：actor/critic 使用两份 features extractor（都从 BC 继承），切断 critic 更新对 actor 表征的影响。
-   - 只继承策略相关权重：features_extractor + `action head`；`value head` 会做零初始化，并在开训前做 value warmup（`PPO_VALUE_WARMUP_*`）。
+   - 只继承策略相关权重：features_extractor + `action head`；`value head` 会做零初始化，并在开训前做 value warmup（`PPO_VALUE_WARMUP_*`；只训练 value head）。
+   - 从 BC→PPO 起，前 `PPO_VF_FREEZE_ROUNDS` 轮冻结 `vf_features_extractor`，随后按 `vit → backbone` 阶梯解冻（`PPO_VF_UNFREEZE_VIT_ROUNDS`）；若探针集上 vf 表征退化，则自动回滚并 refreeze（`state.json: ppo_vf_refreeze_until_episode`）。
    - 前 `PPO_FREEZE_POLICY_ROUNDS` 轮会冻结 policy，只训练 value（避免一开始就破坏 BC policy）。
 
 ### 权重继承（课程学习的落地方式）
@@ -337,8 +338,9 @@ BACKEND_HOST=127.0.0.1 FRONTEND_HOST=127.0.0.1 ./scripts/start
 
 - `PPO_EPISODES_PER_TRAIN`（默认 `1`）
 - `PPO_LR`（默认 `1e-4`）
-- `PPO_GAMMA`（默认 `0.99`）
-- `PPO_GAE_LAMBDA`（默认 `0.95`）
+- `PPO_GAMMA`（默认 `0.999`）
+- `PPO_GAE_LAMBDA`（默认 `0.95`；actor）
+- `PPO_CRITIC_GAE_LAMBDA`（默认 `1.0`；critic，Decoupled-GAE）
 - `PPO_CLIP`（默认 `0.1`）
 - `PPO_EPOCHS`（默认 `4`）
 - `PPO_MINIBATCH_SIZE`（默认 `2048`）
@@ -351,10 +353,11 @@ BACKEND_HOST=127.0.0.1 FRONTEND_HOST=127.0.0.1 ./scripts/start
 - 继承与稳定性：
   - `PPO_SHARE_FEATURES_EXTRACTOR`（默认 `0`）
   - `PPO_TARGET_KL`（默认 `0.02`）
-  - `PPO_FREEZE_POLICY_ROUNDS`（默认 `1`）
+  - `PPO_TARGET_KL_EARLY_STOP`（默认 `1`）
+  - `PPO_FREEZE_POLICY_ROUNDS`（默认 `8`）
   - `PPO_FREEZE_BN`（默认 `1`）
   - `PPO_VALUE_WARMUP_STEPS`（默认 `20000`）
-  - `PPO_VALUE_WARMUP_EPOCHS`（默认 `2`）
+  - `PPO_VALUE_WARMUP_EPOCHS`（默认 `8`）
   - `PPO_VALUE_WARMUP_BATCH`（默认 `1024`）
   - `PPO_VALUE_WARMUP_LR`（默认 `1e-4`）
   - `PPO_VALUE_WARMUP_MAX_STEPS`（默认 `5000`）
@@ -362,6 +365,8 @@ BACKEND_HOST=127.0.0.1 FRONTEND_HOST=127.0.0.1 ./scripts/start
 
 ### Snake 奖励参数（`backend/app/config.py: snake_reward_cfg()`）
 
+- `SNAKE_DIST_SHAPING_WEIGHT`（默认 `0.02`）
+- `SNAKE_DIST_SHAPING_CLIP`（默认 `2.0`）
 - `SNAKE_HUNGER_BUDGET`（默认 `2.0`）
 - `SNAKE_HUNGER_GRACE_STEPS`（默认 `50`）
 - `SNAKE_TERMINAL_INCOMPLETE_BETA`（默认 `50.0`）

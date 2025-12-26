@@ -15,6 +15,8 @@ class SnakeEnvCfg:
 
 def snake_reward_cfg() -> dict[str, Any]:
     return {
+        "dist_shaping_weight": _env_float("SNAKE_DIST_SHAPING_WEIGHT", 0.02),
+        "dist_shaping_clip": _env_float("SNAKE_DIST_SHAPING_CLIP", 2.0),
         "hunger_budget": _env_float("SNAKE_HUNGER_BUDGET", 2.0),
         "hunger_grace_steps": _env_int("SNAKE_HUNGER_GRACE_STEPS", 50),
         "terminal_incomplete_beta": _env_float("SNAKE_TERMINAL_INCOMPLETE_BETA", 50.0),
@@ -72,7 +74,7 @@ def ppo_worker_cfg() -> dict[str, Any]:
         # Adam 学习率（PPO）
         "lr": _env_float("PPO_LR", 1e-4),
         # 折扣因子
-        "gamma": _env_float("PPO_GAMMA", 0.99),
+        "gamma": _env_float("PPO_GAMMA", 0.999),
         # GAE lambda
         "gae_lambda": _env_float("PPO_GAE_LAMBDA", 0.95),
         # PPO clip range（重要：避免 policy update 过大）
@@ -103,16 +105,28 @@ def _ppo_finetune_cfg() -> dict[str, Any]:
     return {
         # 是否共享 actor/critic 的 features_extractor（强烈建议禁用：切断 critic 更新对 actor 表征的影响）
         "share_features_extractor": _env_int("PPO_SHARE_FEATURES_EXTRACTOR", 0),
+        # critic 的 GAE lambda（VC-PPO 推荐：1.0；用于 value target，避免长时序 reward signal 衰减）
+        "critic_gae_lambda": _env_float("PPO_CRITIC_GAE_LAMBDA", 1.0),
         # 目标 KL（<=0 表示禁用；用于限制单次更新幅度，避免从 BC 继承后直接崩）
         "target_kl": _env_float("PPO_TARGET_KL", 0.02),
+        # 是否启用 target_kl “硬早停”（SB3: approx_kl 超阈值则停止该轮剩余更新）
+        "target_kl_early_stop": _env_int("PPO_TARGET_KL_EARLY_STOP", 1),
         # 前 N 轮冻结 policy，只训练 value（给 critic 对齐机会，避免第一轮破坏 BC）
-        "freeze_policy_rounds": _env_int("PPO_FREEZE_POLICY_ROUNDS", 1),
+        "freeze_policy_rounds": _env_int("PPO_FREEZE_POLICY_ROUNDS", 8),
+        # critic 的 features_extractor 冻结/解冻调度（仅 share_features_extractor=0 且从 BC 继承时生效）
+        # - 先冻结 N 轮：只训练 value head，避免 vf 表征被早期错误 target 拉成常数
+        # - 再“阶梯式”解冻：先解冻 vit，再解冻 backbone
+        "vf_freeze_rounds": _env_int("PPO_VF_FREEZE_ROUNDS", 30),
+        "vf_unfreeze_vit_rounds": _env_int("PPO_VF_UNFREEZE_VIT_ROUNDS", 10),
+        # 兜底：若探针集上 vf 表征退化为近似常数，则回滚 vf_extractor=pi_extractor 并 refreeze 一段时间
+        "vf_collapse_feature_std": _env_float("PPO_VF_COLLAPSE_FEATURE_STD", 1e-3),
+        "vf_collapse_refreeze_rounds": _env_int("PPO_VF_COLLAPSE_REFREEZE_ROUNDS", 10),
         # 继承 BC 时强烈建议冻结 BatchNorm（SB3 rollout=eval, train=train；BN 会导致 old/new logprob 不一致而崩）
         "freeze_bn": _env_int("PPO_FREEZE_BN", 1),
         # value warmup（从 BC 继承时；<=0 表示禁用）
         "value_warmup_steps": _env_int("PPO_VALUE_WARMUP_STEPS", 20000),
         "value_warmup_lr": _env_float("PPO_VALUE_WARMUP_LR", 1e-4),
-        "value_warmup_epochs": _env_int("PPO_VALUE_WARMUP_EPOCHS", 2),
+        "value_warmup_epochs": _env_int("PPO_VALUE_WARMUP_EPOCHS", 8),
         "value_warmup_batch": _env_int("PPO_VALUE_WARMUP_BATCH", 1024),
         "value_warmup_max_steps": _env_int("PPO_VALUE_WARMUP_MAX_STEPS", 5000),
     }

@@ -63,7 +63,8 @@ def _collect_rollout_files(
         if len(items) >= want:
             return items, rejected
         rid = f"{collect_id}-{attempt}"
-        obj = _rollout_obj(stage_id, phase, size, collect_id, rid, attempt, target, stop_requested)
+        seed = _train_rollout_seed(stage_id, phase, collect_id, attempt)
+        obj = _rollout_obj(stage_id, phase, size, collect_id, rid, seed, target, stop_requested)
         cov = float(obj["summary"].get("coverage_max") or 0.0)
         if cov < min_cov:
             rejected += 1
@@ -99,6 +100,11 @@ def _rollout_obj(
         "summary": rollout.summary,
         "steps": rollout.steps,
     }
+
+
+def _train_rollout_seed(stage_id: int, phase: str, collect_id: str, attempt: int) -> int:
+    phase_off = 0 if str(phase) == "bc" else 500
+    return int(stage_id) * 1_000_000_000 + int(collect_id) * 1000 + int(attempt) + int(phase_off)
 
 
 def _meta(
